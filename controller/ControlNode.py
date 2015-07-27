@@ -29,7 +29,9 @@ from Tkinter import *
 from ttk import *
 from os import environ as env
 import networkx as nx
+from GenerateTopology import generate
 import pexpect
+from npssdn import MyApp
 from gi.repository import Gtk
 from gi.repository import Pango
 
@@ -104,9 +106,9 @@ class SimpleMonitor(Routing.SimpleSwitch):
 	
         #app = App(root, connection)
 	#root.mainloop()
-	#main = MyApp(connection)
-	#Gtk.main()
-	pass
+	main = MyApp(connection)
+	Gtk.main()
+
     def _monitor(self):
         while True:
 	 #   try:
