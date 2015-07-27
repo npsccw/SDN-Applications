@@ -51,39 +51,44 @@ class SimpleMonitor(Routing.SimpleSwitch):
         super(SimpleMonitor, self).__init__(*args, **kwargs)
         self.is_active = True
         
-	#Topology Discovery
-	self.link_discovery = True
+        #Topology Discovery
+        self.link_discovery = True
         self.port_state = {}          # datapath_id => ports
         self.ports = PortDataState()  # Port class -> PortData class
         self.links = LinkState()      # Link class -> timestamp
         self.link_length = 0
 	
 
-	self.mac_to_port = {}
+        self.mac_to_port = {}
         self.ip_to_port = {}
         self.dpid_to_port = {}
-	self.dpid_to_ip = {}
+        self.dpid_to_ip = {}
         self.dps = {}
         self.dpid_to_node = {0x00012c59e5107640:1, 0x0001c4346b94a200:2,\
                                          0x0001c4346b99dc00:4, 0x0001c4346b946200:5,\
                                          0x0001c4346b971ec0:6, 0x0001f0921c219d40:13}
 
         #SDN Application data structures
-	self.blacklist = []
-	self.throttle_list = []
+        self.blacklist = []
+        self.throttle_list = []
 
-	#threads
-	self.analyzer = Analyzer()
+        #SDN Application Flags
+        self.fingerprint = False
+        self.topology = False
+        self.analyze = False 
+
+        #threads
+        self.analyzer = Analyzer()
         self.lldp_event = hub.Event()
-	self.link_event = hub.Event()
+        self.link_event = hub.Event()
         self.threads.append(hub.spawn(self.lldp_loop))
-	self.threads.append(hub.spawn(self.link_loop))
-	#self.parent_conn, child_con = Pipe()
-	#self.gui_thread = Process(target=self._gui, args=(child_con,))
-	#self.gui_thread.start()
+        self.threads.append(hub.spawn(self.link_loop))
+        #self.parent_conn, child_con = Pipe()
+        #self.gui_thread = Process(target=self._gui, args=(child_con,))
+        #self.gui_thread.start()
         #self.threads.append(hub.spawn(self._monitor))
 
-	self.throttle_list = []
+        self.throttle_list = []
         with open('V','w') as f:
             f.flush()
         with open('D','w') as f:
@@ -92,22 +97,22 @@ class SimpleMonitor(Routing.SimpleSwitch):
             f.flush()	
 
     def _gui(self, connection):
-	#root = Tk()
+        #root = Tk()
         #root.title("SDN App")
         #s = Style()
         #s.theme_use("clam")
         #s.configure('App.TLabel', font="Times 12 bold")
         #s.configure('App.TFrame', background='cyan')
-	#on_button = Button(root, text="Turn ports on", command=lambda: turn_all_ports_on(self.dps,\
-	#		self.dpid_to_ip))
+        #on_button = Button(root, text="Turn ports on", command=lambda: turn_all_ports_on(self.dps,\
+        #		self.dpid_to_ip))
 
-	#on_button.pack()
+        #on_button.pack()
 
-	
+
         #app = App(root, connection)
-	#root.mainloop()
-	main = MyApp(connection)
-	Gtk.main()
+        #root.mainloop()
+        main = MyApp(connection)
+        Gtk.main()
 
     def _monitor(self):
         while True:
