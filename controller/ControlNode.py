@@ -2,9 +2,6 @@ import logging
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, set_ev_cls, DEAD_DISPATCHER
 from ryu.lib import hub
-import numpy as np
-import matplotlib.pyplot as plt
-import time
 from Link import Link, LinkState
 from Switch import Switch
 from LLDPPacket import LLDPPacket
@@ -29,11 +26,15 @@ from Tkinter import *
 from ttk import *
 from os import environ as env
 import networkx as nx
-from GenerateTopology import generate
 import pexpect
-from npssdn import MyApp
 from gi.repository import Gtk
-from gi.repository import Pango
+from DHCPFingerprint import *
+from datetime import datetime
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+from cassandra.cluster import Cluster
+
 
 #assuming python is really fast the computation time is neglgible?
 class SimpleMonitor(Routing.SimpleSwitch):
@@ -114,16 +115,32 @@ class SimpleMonitor(Routing.SimpleSwitch):
         main = MyApp(connection)
         Gtk.main()
 
+    #Todo: Add listener and messages
     def _monitor(self):
         while True:
-	 #   try:
-	 #   	print(self.parent_conn.recv())
-	 #   except:
-	 #	hub.sleep(2)
-            for dp in self.dps:
-                if dp in self.dpid_to_node:
-                    self._request_port_stats(self.dps[dp])
-            hub.sleep(2)
+            try:
+                msg = self.parent_conn.revc()
+                if msg[0] == "activate":
+                    if msg[1] == "fingerprint":
+                        self.fingerprints = {}
+                        self.cluster = Cluster()
+                        self.session = self.cluster.connect(;fingerprints)
+                        db = self.session.execute_async("select * from fpspat")
+                        for row in db.results():
+                            mac_addr = row.mac
+                            self.fingerprints[mac_addr] = {'ip':row.ip, 'os':row.os,\
+                                            'switch':row.switch, 'port':row.port,\
+                                            'hostname':row.hostname, 'history':row.history}
+                hub.sleep(1)
+            except:
+                hub.sleep(2)
+          
+              
+     #          self.fingerprint_list = []
+            # for dp in self.dps:
+            #     if dp in self.dpid_to_node:
+            #         self._request_port_stats(self.dps[dp])
+            # hub.sleep(2)
     
     def draw_graph(self, timeout, draw=False):
         G = nx.Graph()
@@ -286,58 +303,49 @@ class SimpleMonitor(Routing.SimpleSwitch):
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):
         msg = ev.msg
-	reason = msg.reason
-	dp = msg.datapath
-	ofpport = msg.desc
-	if reason == dp.ofproto.OFPPR_ADD:
-		# LOG.debug('A port was added.' +
-		# '(datapath id = %s, port number = %s)',
-		# dp.id, ofpport.port_no)
-		self.port_state[dp.id].add(ofpport.port_no, ofpport)
-		self.send_event_to_observers(\
-			event.EventPortAdd(Port(dp.id, dp.ofproto, ofpport)))
+    	reason = msg.reason
+    	dp = msg.datapath
+    	ofpport = msg.desc
+    	if reason == dp.ofproto.OFPPR_ADD:
+    		self.port_state[dp.id].add(ofpport.port_no, ofpport)
+    		self.send_event_to_observers(\
+    			event.EventPortAdd(Port(dp.id, dp.ofproto, ofpport)))
 
-		if not self.link_discovery:
-			return
+    		if not self.link_discovery:
+    			return
 
-		port = self._get_port(dp.id, ofpport.port_no)
-		if port and not port.is_reserved():
-			self._port_added(port)
-			self.lldp_event.set()
-	elif reason == dp.ofproto.OFPPR_DELETE:
-		# LOG.debug('A port was deleted.' +
-		# '(datapath id = %s, port number = %s)',
-		# dp.id, ofpport.port_no)
-		self.port_state[dp.id].remove(ofpport.port_no)
-		self.send_event_to_observers(\
-			event.EventPortDelete(Port(dp.id, dp.ofproto, ofpport)))
+    		port = self._get_port(dp.id, ofpport.port_no)
+    		if port and not port.is_reserved():
+    			self._port_added(port)
+    			self.lldp_event.set()
+    	elif reason == dp.ofproto.OFPPR_DELETE:
+    		self.port_state[dp.id].remove(ofpport.port_no)
+    		self.send_event_to_observers(\
+    			event.EventPortDelete(Port(dp.id, dp.ofproto, ofpport)))
 
-		if not self.link_discovery:
-			return
+    		if not self.link_discovery:
+    			return
 
-		port = self._get_port(dp.id, ofpport.port_no)
-		if port and not port.is_reserved():
-			self.ports.del_port(port)
-			self._link_down(port)
-			self.lldp_event.set()
+    		port = self._get_port(dp.id, ofpport.port_no)
+    		if port and not port.is_reserved():
+    			self.ports.del_port(port)
+    			self._link_down(port)
+    			self.lldp_event.set()
 
-	else:
-		assert reason == dp.ofproto.OFPPR_MODIFY
-		# LOG.debug('A port was modified.' +
-		# '(datapath id = %s, port number = %s)',
-		# dp.id, ofpport.port_no)
-		self.port_state[dp.id].modify(ofpport.port_no, ofpport)
-		self.send_event_to_observers(\
-			event.EventPortModify(Port(dp.id, dp.ofproto, ofpport)))
+    	else:
+    		assert reason == dp.ofproto.OFPPR_MODIFY
+    		self.port_state[dp.id].modify(ofpport.port_no, ofpport)
+    		self.send_event_to_observers(\
+    			event.EventPortModify(Port(dp.id, dp.ofproto, ofpport)))
 
-		if not self.link_discovery:
-			return
+    		if not self.link_discovery:
+    			return
 
-		port = self._get_port(dp.id, ofpport.port_no)
-		if port and not port.is_reserved():
-			if self.ports.set_down(port):
-				self._link_down(port)
-			self.lldp_event.set()
+    		port = self._get_port(dp.id, ofpport.port_no)
+    		if port and not port.is_reserved():
+    			if self.ports.set_down(port):
+    				self._link_down(port)
+    			self.lldp_event.set()
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def _port_stats_reply_handler(self, ev):
@@ -345,12 +353,102 @@ class SimpleMonitor(Routing.SimpleSwitch):
         self.analyzer.analyze(ev, timestamp.second + (timestamp.microsecond * 1e-6))
     
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def lldp_packet_in_handler(self, ev):
+    def app_packet_in_handler(self, ev):
         msg = ev.msg
-        
+        if self.fingerprint:
+
+
+        if self.topology:
+            self._lldp_handler(msg)
+
+    def _dhcp_hander(self, msg):
+        dpid = hex(msg.datapath.id)
+        pkt = msg.data
+
         try:
-            src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
-            
+            source_mac, parsedPacket = dhcp_parse(pkt)
+        except TypeError:
+            return 
+
+        hitlist = compare(self.fingerprint_list,parsedPacket)
+
+        hostname = get_dhcp_option_value(parsedPacket[0][12], 12)
+        option53 = get_dhcp_option_value(parsedPacket[0][12], 53)
+        option60 = get_dhcp_option_value(parsedPacket[0][12], 60)
+        if option53:
+            dhcptype = dhcp_types[option53]
+            if dhcptype != "Discover" and dhcptype != "Request":
+                print("Not a request of discover packets, so ignoring")
+                return
+        if parsedPacket[0][2]:
+            source_ip = hex_to_ip(hex(parsedPacket[0][2]))
+        elif parsedPacket[0][17]:
+            source_ip = hex_to_ip(hex(parsedPacket[0][17]))
+        elif get_dhcp_option_value(parsedPacket[0][12], 50):
+            source_ip = map(ord, get_dhcp_option_value(parsedPacket[0][12], 50))
+            source_ip = '.'.join(str(x) for x in source_ip)
+        else:
+            source_ip = None
+
+        if parsedPacket[0][2]:
+            source_ip = hex_to_ip(hex(parsedPacket[0][2]))
+        elif parsedPacket[0][16]:
+            source_ip = hex_to_ip(hex(parsedPacket[0][17]))
+        elif get_dhcp_option_value(parsedPacket[0][12], 50):
+            source_ip = get_dhcp_option_value(parsedPacket[0][12], 50)
+            source_ip = '.'.join(str(x) for x in source_ip)
+        else:
+            source_ip = None
+
+        mac = hex_to_mac(source_mac)
+
+        ### NPS CCW Specific Network ###
+        location = DPIDToLocation(dpid)#
+        port = str(msg.in_port)        # 
+        ################################
+
+        if source_mac not in self.fingerprints:
+            print("New fingerprint")
+            print "Source MAC: {}".format(MAC)
+            print "IP Address: {}".format(sourceIP)
+            print "Location  : {}".format(Location)
+            print "Host name : {}".format(Hostname)
+            print "DHCP Type : {}".format(dhcptype)
+            mac_history = ["[%s, %s, %s, %s, %s]" % (source_ip, hitlist[0][0],\
+                            location, port, hostname)]
+            self.fingerprints[source_mac] = {'ip':source_ip, 'os':hitlist[0][0],\
+                                            'switch':location, 'port':port,\
+                                            'hostname':hostname, 'history':mac_history}
+            command = "insert into fpspat (MAC, IP, OS, Switch, Port, Hostname,\
+                        Time, History) values ('{0}', '{1}', '{2}', {3}, '{4}',\
+                        '{5}', '{6}', {7}".format(MAC, source_ip, hitlist[0][0],\
+                        `location`, `port`, hostname, str(datetime.now()),\
+                        mac_history)
+
+            self.session.execute(command)
+        
+        fp = self.fingerprints[source_mac]
+        changes = []
+        time = str(datetime.now())
+        for prop,val in [('ip', source_ip), ('os', hitlist[0][0]),\
+                        ('switch', location),('port', port),('hostname', hostname)]:
+            if fp[prop] != val:
+                print("The " + prop + " changed")
+                changes.append("[" + fp[prop] + " changed to " + val + " at time " + time + "]")
+                fp[prop] = val
+                command = "update fpspat set " + prop + " = " + val + " where MAC = " + source_mac
+                self.session.execute(command)
+
+        if changes:
+            print("Database updated to reflect changes")
+            fp['history'] += changes
+            command = "update fpspat set History = '{0}' where MAC= '{1}'".format(fp['history'], source_mac)
+            self.session.execute(command)
+
+
+    def _lldp_handler(self, msg):
+        try:
+            src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)      
         except LLDPPacket.LLDPUnknownFormat as e:
             # This handler can receive all the packtes which can be
             # not-LLDP packet. Ignore it silently
@@ -383,10 +481,6 @@ class SimpleMonitor(Routing.SimpleSwitch):
             return
 
         old_peer = self.links.get_peer(src)
-        # LOG.debug("Packet-In")
-        # LOG.debug("  src=%s", src)
-        # LOG.debug("  dst=%s", dst)
-        # LOG.debug("  old_peer=%s", old_peer)
         if old_peer and old_peer != dst:
             old_link = Link(src, old_peer)
             self.send_event_to_observers(event.EventLinkDelete(old_link))
@@ -396,11 +490,10 @@ class SimpleMonitor(Routing.SimpleSwitch):
             self.send_event_to_observers(event.EventLinkAdd(link))
 
         if not self.links.update_link(src, dst):
-            # reverse link is not detected yet.
-            # So schedule the check early because it's very likely it's up
             self.ports.move_front(dst)
             self.lldp_event.set()
             
+
     def send_lldp_packet(self, port):
         try:
             port_data = self.ports.lldp_sent(port)
