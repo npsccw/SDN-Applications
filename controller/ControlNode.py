@@ -34,8 +34,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 from cassandra.cluster import Cluster
-
-
+from dpid_map import map_switch_dpid
+from utils import *
 #assuming python is really fast the computation time is neglgible?
 class SimpleMonitor(Routing.SimpleSwitch):
 
@@ -58,13 +58,9 @@ class SimpleMonitor(Routing.SimpleSwitch):
         self.ports = PortDataState()  # Port class -> PortData class
         self.links = LinkState()      # Link class -> timestamp
         self.link_length = 0
+	self.switch_ports = {}
 	
-
-        self.mac_to_port = {}
-        self.ip_to_port = {}
-        self.dpid_to_port = {}
         self.dpid_to_ip = {}
-        self.dps = {}
         self.dpid_to_node = {0x00012c59e5107640:1, 0x0001c4346b94a200:2,\
                                          0x0001c4346b99dc00:4, 0x0001c4346b946200:5,\
                                          0x0001c4346b971ec0:6, 0x0001f0921c219d40:13}
@@ -75,7 +71,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
 
         #SDN Application Flags
         self.fingerprint = False
-        self.topology = False
+        self.topology = True
         self.analyze = False 
 
         #threads
@@ -84,10 +80,10 @@ class SimpleMonitor(Routing.SimpleSwitch):
         self.link_event = hub.Event()
         self.threads.append(hub.spawn(self.lldp_loop))
         self.threads.append(hub.spawn(self.link_loop))
-        #self.parent_conn, child_con = Pipe()
-        #self.gui_thread = Process(target=self._gui, args=(child_con,))
-        #self.gui_thread.start()
-        #self.threads.append(hub.spawn(self._monitor))
+        self.parent_conn, child_con = Pipe()
+        self.gui_thread = Process(target=self._gui, args=(child_con,))
+        self.gui_thread.start()
+        self.threads.append(hub.spawn(self._monitor))
 
         self.throttle_list = []
         with open('V','w') as f:
@@ -97,44 +93,62 @@ class SimpleMonitor(Routing.SimpleSwitch):
         with open('L','w') as f:
             f.flush()	
 
+
     def _gui(self, connection):
-        #root = Tk()
-        #root.title("SDN App")
-        #s = Style()
-        #s.theme_use("clam")
-        #s.configure('App.TLabel', font="Times 12 bold")
-        #s.configure('App.TFrame', background='cyan')
-        #on_button = Button(root, text="Turn ports on", command=lambda: turn_all_ports_on(self.dps,\
-        #		self.dpid_to_ip))
+        class App(Gtk.Window):
+            def __init__(self, connection):
+                self.connection = connection
+                Gtk.Window.__init__(self, title="Red Button")
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+                button = Gtk.Button("Fingerprint")
+                button.connect("clicked", self.send_msg, "activate fingerprint")
+                box.pack_start(button, True, True, 0)
+		button = Gtk.Button("Full Graph")
+                button.connect("clicked", self.send_msg, "activate fingerprint")
+		box.pack_start(button, True, True, 0)
+                button = Gtk.Button("Spanning Tree")
+                button.connect("clicked", self.send_msg, "app blacklist")
+                box.pack_start(button, True, True, 0)
+                self.add(box)
+            def send_msg(self, button, data):
+                self.connection.send(data)
+                self.connection.send("\n")
 
-        #on_button.pack()
-
-
-        #app = App(root, connection)
-        #root.mainloop()
-        main = MyApp(connection)
+        win = App(connection)
+        win.connect("delete-event", Gtk.main_quit)
+        win.show_all()
         Gtk.main()
 
     #Todo: Add listener and messages
     def _monitor(self):
         while True:
             try:
-                msg = self.parent_conn.revc()
+                msg = self.parent_conn.recv()
+		print(msg)
+		msg = msg.split()
                 if msg[0] == "activate":
                     if msg[1] == "fingerprint":
                         self.fingerprints = {}
-                        self.cluster = Cluster()
-                        self.session = self.cluster.connect(;fingerprints)
+			self.fingerprint_list = createFingerPrintList('/ryu/ryu/app/Mid/fingerprint.xml')
+			self.cluster = Cluster()
+                        self.session = self.cluster.connect('fingerprints')
                         db = self.session.execute_async("select * from fpspat")
-                        for row in db.results():
+			#import IPython
+			#IPython.embed()
+                        for row in db.result():
                             mac_addr = row.mac
+			    print(row)
                             self.fingerprints[mac_addr] = {'ip':row.ip, 'os':row.os,\
                                             'switch':row.switch, 'port':row.port,\
                                             'hostname':row.hostname, 'history':row.history}
-                hub.sleep(1)
-            except:
+            		
+			self.fingerprint = True
+		if msg[0] == "app":
+		    if msg[1] == "blacklist":
+			self._modify_blacklist("10.10.13.78", "add")
+	    except:
                 hub.sleep(2)
-          
+	    hub.sleep(2)
               
      #          self.fingerprint_list = []
             # for dp in self.dps:
@@ -143,47 +157,34 @@ class SimpleMonitor(Routing.SimpleSwitch):
             # hub.sleep(2)
     
     def draw_graph(self, timeout, draw=False):
-        G = nx.Graph()
-        
+	G = nx.Graph()
+
         plt.clf()
         labels = {}
         nodes = []
-        for id in self.dps:
+        for id in self.dpids:
             G.add_node(hex(id))
             labels[hex(id)] = hex(id)
             nodes.append(hex(id))
-    
-        for link in self.links:
-            G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
-        pos = nx.spring_layout(G)
-        
-        vertex_cover = min_weighted_vertex_cover(G)
-        for node in nodes:
-            G.remove_node(node)
-            
-        for node in vertex_cover:
-            nodes.remove(node)
 
-	if draw:
-            nx.draw(G)
-            nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color='g',\
-                                node_size=500, alpha=0.8)
-                                
-            nx.draw_networkx_nodes(G, pos, nodelist=vertex_cover, node_color='b',\
-                                node_size=1000, alpha=0.8)
-        
         for link in self.links:
             G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
-        if draw:
+        self.graph = G.copy()
+        pos = nx.spring_layout(G)
+	
+	for node in nodes:
+            G.remove_node(node)
+	
+	if not draw:
+            nx.draw(G)
+            nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color='FireBrick',\
+                                node_size=500, alpha=0.8)
+	    for link in self.links:
+                G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
+
 	    nx.draw_networkx_edges(G, pos)
-        
-        #nx.draw_networkx_labels(G, pos, labels, font_size=16)
-        
-#	plt.savefig('topology.png')
-	#plt.show()
-            plt.pause(timeout)
-        #generate(self.dps, self.links)
-		
+     	    plt.pause(timeout)
+
     def _request_port_stats(self, datapath):
 		ofproto = datapath.ofproto
 		parser = datapath.ofproto_parser
@@ -201,20 +202,20 @@ class SimpleMonitor(Routing.SimpleSwitch):
     def _register(self, dp):
         assert dp.id is not None
 
-        self.dps[dp.id] = dp
+        self.dpids[dp.id] = dp
         if dp.id not in self.port_state:
             self.port_state[dp.id] = PortState()
             for port in dp.ports.values():
                 self.port_state[dp.id].add(port.port_no, port)
 
     def _unregister(self, dp):
-        if dp.id in self.dps:
-            del self.dps[dp.id]
+        if dp.id in self.dpids:
+            del self.dpids[dp.id]
             del self.port_state[dp.id]
 
     def _get_switch(self, dpid):
-        if dpid in self.dps:
-            switch = Switch(self.dps[dpid])
+        if dpid in self.dpids:
+            switch = Switch(self.dpids[dpid])
             for ofpport in self.port_state[dpid].values():
                 switch.add_port(ofpport)
             return switch
@@ -256,7 +257,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
         if ev.state == MAIN_DISPATCHER:
             
             dp_multiple_conns = False
-            if datapath.id in self.dps:
+            if datapath.id in self.dpids:
                 dp_multiple_conns = True
             
             self.logger.debug('register datapath: %016x', datapath.id)
@@ -286,7 +287,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
                         self._port_added(port)
                         
         elif ev.state == DEAD_DISPATCHER:
-            if datapath.id in self.dps:
+            if datapath.id in self.dpids:
                 self.logger.debug('unregister datapath: %016x', datapath.id)
                 self._unregister(datapath)
                 self.send_event_to_observers(event.EventSwitchLeave(switch))
@@ -356,46 +357,36 @@ class SimpleMonitor(Routing.SimpleSwitch):
     def app_packet_in_handler(self, ev):
         msg = ev.msg
         if self.fingerprint:
-
+	    self._dhcp_handler(msg)
 
         if self.topology:
             self._lldp_handler(msg)
 
-    def _dhcp_hander(self, msg):
+    def _dhcp_handler(self, msg):
         dpid = hex(msg.datapath.id)
         pkt = msg.data
-
         try:
             source_mac, parsedPacket = dhcp_parse(pkt)
+	    print("DHCP Packet")
         except TypeError:
             return 
 
         hitlist = compare(self.fingerprint_list,parsedPacket)
 
-        hostname = get_dhcp_option_value(parsedPacket[0][12], 12)
-        option53 = get_dhcp_option_value(parsedPacket[0][12], 53)
-        option60 = get_dhcp_option_value(parsedPacket[0][12], 60)
+        hostname = get_dhcp_option_value(parsedPacket[12], 12)
+        option53 = get_dhcp_option_value(parsedPacket[12], 53)
+        option60 = get_dhcp_option_value(parsedPacket[12], 60)
         if option53:
             dhcptype = dhcp_types[option53]
             if dhcptype != "Discover" and dhcptype != "Request":
                 print("Not a request of discover packets, so ignoring")
                 return
-        if parsedPacket[0][2]:
-            source_ip = hex_to_ip(hex(parsedPacket[0][2]))
-        elif parsedPacket[0][17]:
-            source_ip = hex_to_ip(hex(parsedPacket[0][17]))
-        elif get_dhcp_option_value(parsedPacket[0][12], 50):
-            source_ip = map(ord, get_dhcp_option_value(parsedPacket[0][12], 50))
-            source_ip = '.'.join(str(x) for x in source_ip)
-        else:
-            source_ip = None
-
-        if parsedPacket[0][2]:
-            source_ip = hex_to_ip(hex(parsedPacket[0][2]))
-        elif parsedPacket[0][16]:
-            source_ip = hex_to_ip(hex(parsedPacket[0][17]))
-        elif get_dhcp_option_value(parsedPacket[0][12], 50):
-            source_ip = get_dhcp_option_value(parsedPacket[0][12], 50)
+        if parsedPacket[2]:
+            source_ip = hex_to_ip(hex(parsedPacket[2]))
+        elif parsedPacket[16]:
+            source_ip = hex_to_ip(hex(parsedPacket[16]))
+        elif get_dhcp_option_value(parsedPacket[12], 50):
+            source_ip = map(ord, get_dhcp_option_value(parsedPacket[12], 50))
             source_ip = '.'.join(str(x) for x in source_ip)
         else:
             source_ip = None
@@ -407,42 +398,57 @@ class SimpleMonitor(Routing.SimpleSwitch):
         port = str(msg.in_port)        # 
         ################################
 
-        if source_mac not in self.fingerprints:
+        if mac not in self.fingerprints:
             print("New fingerprint")
-            print "Source MAC: {}".format(MAC)
-            print "IP Address: {}".format(sourceIP)
-            print "Location  : {}".format(Location)
-            print "Host name : {}".format(Hostname)
+            print "Source MAC: {}".format(mac)
+            print "IP Address: {}".format(source_ip)
+            print "Location  : {}".format(location)
+            print "Host name : {}".format(hostname)
             print "DHCP Type : {}".format(dhcptype)
             mac_history = ["[%s, %s, %s, %s, %s]" % (source_ip, hitlist[0][0],\
                             location, port, hostname)]
-            self.fingerprints[source_mac] = {'ip':source_ip, 'os':hitlist[0][0],\
+            self.fingerprints[mac] = {'ip':source_ip, 'os':hitlist[0][0],\
                                             'switch':location, 'port':port,\
                                             'hostname':hostname, 'history':mac_history}
             command = "insert into fpspat (MAC, IP, OS, Switch, Port, Hostname,\
-                        Time, History) values ('{0}', '{1}', '{2}', {3}, '{4}',\
-                        '{5}', '{6}', {7}".format(MAC, source_ip, hitlist[0][0],\
-                        `location`, `port`, hostname, str(datetime.now()),\
+                        Time, History) values ('{0}', '{1}', '{2}', '{3}', '{4}',\
+                        '{5}', '{6}', {7})".format(mac, source_ip, hitlist[0][0],\
+                        location, port, hostname, str(datetime.now()),\
                         mac_history)
-
             self.session.execute(command)
         
-        fp = self.fingerprints[source_mac]
+        fp = self.fingerprints[mac]
         changes = []
         time = str(datetime.now())
+	skip_switch = False
         for prop,val in [('ip', source_ip), ('os', hitlist[0][0]),\
-                        ('switch', location),('port', port),('hostname', hostname)]:
+                        ('port', port),('switch', location),('hostname', hostname)]:
             if fp[prop] != val:
+		if prop == "port":
+		    try:
+		        if port in self.switch_ports[dpid]:
+			    skip_switch = True
+			    print("Repeat DHCP")
+			    continue
+		    except:
+			print("DPID not set up yet")
+			skip_switch = True
+			continue
+		if prop == "switch":
+		    print(port)
+		    if skip_switch:
+			continue
                 print("The " + prop + " changed")
                 changes.append("[" + fp[prop] + " changed to " + val + " at time " + time + "]")
                 fp[prop] = val
-                command = "update fpspat set " + prop + " = " + val + " where MAC = " + source_mac
-                self.session.execute(command)
+                command = "update fpspat set " + prop + " = " + val + " where MAC = " + mac
+                print(command)
+		self.session.execute(command)
 
         if changes:
             print("Database updated to reflect changes")
             fp['history'] += changes
-            command = "update fpspat set History = '{0}' where MAC= '{1}'".format(fp['history'], source_mac)
+            command = "update fpspat set History = '{0}' where MAC= '{1}'".format(fp['history'], mac)
             self.session.execute(command)
 
 
@@ -488,6 +494,14 @@ class SimpleMonitor(Routing.SimpleSwitch):
         link = Link(src, dst)
         if link not in self.links:
             self.send_event_to_observers(event.EventLinkAdd(link))
+	    if src_dpid not in self.switch_ports:
+		self.switch_ports[src_dpid] = []
+	    if src_port_no not in self.switch_ports[src_dpid]:
+	        self.switch_ports[src_dpid].append(src_port_no)
+	    if dst_dpid not in self.switch_ports:
+		self.switch_ports[dst_dpid] = []
+	    if dst_port_no not in self.switch_ports[dst_dpid]:
+		self.switch_ports[dst_dpid].append(dst_port_no)
 
         if not self.links.update_link(src, dst):
             self.ports.move_front(dst)
@@ -504,7 +518,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
         if port_data.is_down:
             return
 
-        dp = self.dps.get(port.dpid, None)
+        dp = self.dpids.get(port.dpid, None)
         if dp is None:
             # datapath was already deleted
             return
@@ -587,63 +601,69 @@ class SimpleMonitor(Routing.SimpleSwitch):
 			if dst in self.ports:
 				self.ports.move_front(dst)
 				self.lldp_event.set()
-		
+		if link.dst.port_no in self.switch_ports[link.dst.dpid]:
+		    self.switch_ports[link.dst.dpid].remove(link.dst.port_no)
+		if link.src.port_no in self.switch_ports[link.src.dpid]:
+		    self.switch_ports[link.src.dpid].remove(link.src.port_no)
+
 	    self.link_event.wait(timeout=self.TIMEOUT_CHECK_PERIOD)
 	
-	#Adds or removes an IP flow from each switch
-	def _modify_blacklist(self, ipaddr, mode, dl_type=0x800):
-       	    res = dot_to_dec(ipaddr)
-    	    match = datapath.ofproto_parser.OFPMatch(dl_type=dl_type, nw_src=res)
+    #Adds or removes an IP flow from each switch
+    def _modify_blacklist(self, ipaddr, mode, dl_type=0x800):
+       	res = dot_to_dec(ipaddr)
+
+	if mode == "add":
+	    if ipaddr in self.blacklist:
+	        return
+	    self.blacklist.append(ipaddr)
+	elif mode == "rmv":
+	    if ipaddr not in self.blacklist:
+	        return
+	    self.blacklist.remove(ipaddr)
+	print(self.blacklist)
+	for dp in self.dpids:
+	    datapath = self.dpids[dp]
+	    ofproto = datapath.ofproto
+            match = datapath.ofproto_parser.OFPMatch(dl_type=dl_type, nw_src=res)
+
 	    if mode == "add":
-		if ipaddr in self.blacklist:
-		    return
-	    	self.blacklist.append(ipaddr)
+	        command = ofproto.OFPFC_ADD
 	    elif mode == "rmv":
-		if ipaddr not in self.blacklist:
-		    return
-		self.blacklist.remove(ipaddr)
-	    
-	    for dp in self.dps:
-	        datapath = self.dps[dp]
-		ofproto = datapath.ofproto
-		if mode == "add":
-		    command = ofproto.OFPFC_ADD
-		elif mode == "rmv":
-		    command = ofproto.OFPFC_DELETE
-		mod = datapath.ofproto_parser.OFPFlowMod(datapath=datapath, match=match,\
+	        command = ofproto.OFPFC_DELETE
+	    mod = datapath.ofproto_parser.OFPFlowMod(datapath=datapath, match=match,\
                                 cookie=0,command=command, idle_timeout=0, hard_timeout=0,\
                                 priority=ofproto.OFP_DEFAULT_PRIORITY+5,\
                                 flags=ofproto.OFPFF_SEND_FLOW_REM, actions=None)
 
-                datapath.send_msg(mod)			
+            datapath.send_msg(mod)			
 	
-	#Changes transmission rate on a switch's port -- meant for HP switches
-	#@todo: make more general? Throttle switches that see an IP address
-	def _modify_throttle(self, switch_ip, port, mode, username="manager", password="ccw"):
-	    if mode == "add":
-		if ipaddr in self.throttle_list:
-		    return
-		self.throttle_list.append((switch, port))
-		command = 'interface ethernet' + `port` + ' rate-limit all out kbps 10000'
-	    elif mode == "rmv":
-		if ipaddr not in self.throttle_list:
-		    return
-		self.throttle_list.remove((switch, port))
-		command = 'no interface ethernet' + `port` + ' rate-limit all out kbps 10000'
+    #Changes transmission rate on a switch's port -- meant for HP switches
+    #@todo: make more general? Throttle switches that see an IP address
+    def _modify_throttle(self, switch_ip, port, mode, username="manager", password="ccw"):
+	if mode == "add":
+    	    if ipaddr in self.throttle_list:
+    	        return
+	    self.throttle_list.append((switch, port))
+	    command = 'interface ethernet' + `port` + ' rate-limit all out kbps 10000'
+	elif mode == "rmv":
+	    if ipaddr not in self.throttle_list:
+	        return
+    	    self.throttle_list.remove((switch, port))
+	    command = 'no interface ethernet' + `port` + ' rate-limit all out kbps 10000'
 	    
-	    print("Starting throttle command")
-	    s = pexpect.spawn("ssh %s@%s" %(username, switch_ip))
-	    s.expect('.*assword: ')
-            # Send the password
-            s.sendline(password)
-            s.expect('Press any key to continue')
-            # Send the return key
-            s.send('\r')
-            s.sendline('config \n')
-            s.sendline(command)
-            s.sendline('logo')
-            s.sendline('y')
-            print('Successful')
+	print("Starting throttle command")
+	s = pexpect.spawn("ssh %s@%s" %(username, switch_ip))
+	s.expect('.*assword: ')
+        # Send the password
+        s.sendline(password)
+        s.expect('Press any key to continue')
+        # Send the return key
+        s.send('\r')
+        s.sendline('config \n')
+        s.sendline(command)
+        s.sendline('logo')
+        s.sendline('y')
+        print('Successful')
 
 	    
 	        
