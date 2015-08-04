@@ -6,7 +6,7 @@ from matplotlib.backends.backend_gtk3cairo import FigureCanvasGTK3Cairo as Figur
 
 
 class SDNApp(Gtk.Window):
-    def __init__(self):
+    def __init__(self, connection=None):
         self.apps = {"analyzer": False, "topology": False, "fingerprint":False}
         Gtk.Window.__init__(self, title="NPS SDN Application")
         self.set_border_width(10)
