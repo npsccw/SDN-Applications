@@ -20,7 +20,6 @@ from ryu.ofproto import nx_match
 from networkx.algorithms.approximation.vertex_cover import min_weighted_vertex_cover
 from multiprocessing import Process, Pipe
 import time
-from gui import App
 
 import networkx as nx
 import pexpect

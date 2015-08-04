@@ -292,7 +292,7 @@ class SDNApp(Gtk.Window):
 
         self.add(frame)
 
-    def start_controller(self):
+    def start_controller(self, button, data=None):
 	if self.controller:
 	    self.controller.terminate()
 	self.controller = Popen(["sudo", "ryu-manager", "ControlNode.py"])
