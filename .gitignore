@@ -1,2 +1,7 @@
 *.pyc
 ip_dpid_map
+blacklist
+fingerprint
+sandbox
+commands
+control_node_settings

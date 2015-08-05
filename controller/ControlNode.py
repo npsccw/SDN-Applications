@@ -138,13 +138,24 @@ class SimpleMonitor(Routing.SimpleSwitch):
             self.threads.append(hub.spawn(self.link_loop))
  
 
+    def clear_all_flows(self):
+        for switch in [1,2,3,4,5,6,8,9,10,11,12,13,14]:
+            print("Deleting flows on {}".format(switch))
+            system("dpctl del-flows tcp:10.10.0.{}:6655".format(switch))
+            
+        for dp in self.dpids:
+            datapath = self.dpids[dp]
+            print("Adding lldp flow onto {}".format(dp))
+            self._create_lldp_flow(datapath)
+
+
     def switch_on_all_ports(self,username="manager", password="ccw"):
         for dp in self.dpids:
             dp = hex(dp)
             print("logging into " + self.dpid_to_ip[dp])
             s = spawn("ssh %s@%s" %(username, self.dpid_to_ip[dp]))
             s.expect(".*assword")
-	       s.sendline(password)
+	        s.sendline(password)
             s.expect("Press any key to continue")
             s.sendline("\r")
             s.sendline("config")
@@ -384,26 +395,16 @@ class SimpleMonitor(Routing.SimpleSwitch):
             if not dp_multiple_conns:
                 self.send_event_to_observers(event.EventSwitchEnter(switch))
                 
-            ofproto = datapath.ofproto
-            ofproto_parser = datapath.ofproto_parser        
-            if ofproto.OFP_VERSION == ofproto_v1_0.OFP_VERSION:
-		#Add LLDP Rule
-		match = datapath.ofproto_parser.OFPMatch(dl_type=0x88cc)
-                actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
-                mod = datapath.ofproto_parser.OFPFlowMod(
-                    datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
-                    idle_timeout=0, hard_timeout=0, actions=actions,
-                    priority=0xFFFF)
-		datapath.send_msg(mod)
-
-		#Add ARP Rule when using OpenFlow v1.3
-                #match = datapath.ofproto_parser.OFPMatch(dl_type=0x0806)
-                #actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
-                #mod = datapath.ofproto_parser.OFPFlowMod(
-                #    datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
-                #    idle_timeout=0, hard_timeout=0, actions=actions,
-                #    priority=0xFFFF)
-                #datapath.send_msg(mod)
+            
+            self._create_lldp_flow(datapath)
+    		#Add ARP Rule when using OpenFlow v1.3
+                    #match = datapath.ofproto_parser.OFPMatch(dl_type=0x0806)
+                    #actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+                    #mod = datapath.ofproto_parser.OFPFlowMod(
+                    #    datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
+                    #    idle_timeout=0, hard_timeout=0, actions=actions,
+                    #    priority=0xFFFF)
+                    #datapath.send_msg(mod)
 		
 
 
@@ -425,6 +426,18 @@ class SimpleMonitor(Routing.SimpleSwitch):
                     
         self.lldp_event.set()
 
+    def _create_lldp_flow(self, datapath):
+        ofproto = datapath.ofproto
+        ofproto_parser = datapath.ofproto_parser        
+        if ofproto.OFP_VERSION == ofproto_v1_0.OFP_VERSION:
+            #Add LLDP Rule
+            match = datapath.ofproto_parser.OFPMatch(dl_type=0x88cc)
+                    actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+                    mod = datapath.ofproto_parser.OFPFlowMod(
+                        datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
+                        idle_timeout=0, hard_timeout=0, actions=actions,
+                        priority=0xFFFF)
+            datapath.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):

@@ -1,3 +1,0 @@
-self.fingerprint = False
-self.analyze = True
-self.topology = True

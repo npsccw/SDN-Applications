@@ -225,6 +225,38 @@ class SDNApp(Gtk.Window):
         stack_switcher.set_stack(stack)
         vbox.pack_start(stack_switcher, True, True, 0)
         vbox.pack_start(stack, True, True, 0)
+
+        def tool(button):
+            print("I'm a new button!")
+
+        #Network Toolbox
+        vgrid = Gtk.Grid()
+        label = Gtk.Label()
+        label.set_markup("<big><b>Network Toolbox</b></big>")
+        vgrid.attach(label, 0,0,1,1)
+        vgrid.set_row_spacing(10)
+        button = Gtk.Button("Clear All Flows")
+        button.connect("clicked", self.send_command, "self.clear_all_flows()")
+        vgrid.attach(button, 0,1,1,2)
+        button = Gtk.Button("Turn On All Ports")
+        button.connect("clicked", self.send_command, "self.switch_on_all_ports()")
+        vgrid.attach(button, 0,3,1,2)
+        button = Gtk.Button("Generate Spanning Tree")
+        button.connect("clicked", self.send_command, "self.create_spanning_tree()")
+        vgrid.attach(button, 0,5,1,2)
+        button = Gtk.Button("New Button")
+        button.connect("clicked", tool)
+        vgrid.attach(button, 0,7,1,2)
+        button = Gtk.Button("New Button")
+        button.connect("clicked", tool)
+        vgrid.attach(button, 0,9,1,2)
+        button = Gtk.Button("New Button")
+        button.connect("clicked", tool)
+        vgrid.attach(button, 0,11,1,2)
+        self.hbox_app.pack_start(vgrid, True, True, 0)
+
+
+
         self.add(frame)
 
     def restart_controller(self, button, data=None):
@@ -243,6 +275,11 @@ class SDNApp(Gtk.Window):
             #self.controller = Popen(["sudo", "ryu-manager", "ControlNode.py"])
             pass
         self.switch_screens(None, "forward")
+
+    def send_command(self, button, data):
+        with open("commands", "a") as f:
+            f.write(data + "\n")
+            f.flush()
 
     def initial_show(self):
         self.show_all()
