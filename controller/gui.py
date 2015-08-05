@@ -4,11 +4,12 @@ from numpy import arange, pi, random, linspace
 import matplotlib.cm as cm
 from matplotlib.backends.backend_gtk3cairo import FigureCanvasGTK3Cairo as FigureCanvas
 from subprocess import Popen, PIPE
+import signal
 
 class SDNApp(Gtk.Window):
     def __init__(self, connection=None):
-	self.controller = None
-        self.apps = {"analyzer": False, "topology": False, "fingerprint":False}
+        self.controller = None
+        self.apps = {"analyze": False, "topology": False, "fingerprint":False}
         Gtk.Window.__init__(self, title="NPS SDN Application")
         self.set_border_width(10)
         self.set_default_size(400, 200)
@@ -44,7 +45,7 @@ class SDNApp(Gtk.Window):
 
         vbox_left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         check = Gtk.CheckButton("Analyzer")
-        check.connect("toggled", self.on_toggled, "analyzer")
+        check.connect("toggled", self.on_toggled, "analyze")
         check.set_active(False)
         vbox_left.pack_start(check, True, True, 0)
         check = Gtk.CheckButton("Topology")
@@ -61,12 +62,12 @@ class SDNApp(Gtk.Window):
         image.set_from_file("ccwlogo.gif")
         vbox_right.pack_start(image, True, True, 0)
 
-        button = Gtk.Button("Start Controller")
-        button.connect("clicked", self.start_controller)
+        button = Gtk.Button("Run")
+        button.connect("clicked", self.run)
         vbox_splash.pack_start(button, True, True, 0)
 
-        button = Gtk.Button("Run")
-        button.connect("clicked", self.switch_screens, "forward")
+        button = Gtk.Button("Restart Controller")
+        button.connect("clicked", self.restart_controller)
         vbox_splash.pack_start(button, True, True, 0)
 
         hbox.pack_start(vbox_left, True, True, 0)
@@ -85,8 +86,6 @@ class SDNApp(Gtk.Window):
         vbox.pack_start(label, True, True, 0)
 
         stack = Gtk.Stack()
-        # stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
-        # stack.set_transition_duration(50)
 
         #Blacklist App
         stack_app = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -174,8 +173,6 @@ class SDNApp(Gtk.Window):
         label.set_markup("<big><b>Packet Manipulations</b></big>")
         vbox.pack_start(label, True, True, 0)
         stack = Gtk.Stack()
-        # stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
-        # stack.set_transition_duration(500)
         
         #Ping app
         stack_app = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -212,7 +209,7 @@ class SDNApp(Gtk.Window):
         self.tcp_text_view.set_cursor_visible(False)
         scrolledwindow.add(self.tcp_text_view)
         self.tcp_entry = Gtk.Entry()
-        self.tcp_entry.set_text("Enter an IP address")
+        self.tcp_entry.set_text("NOT WORKING DO NOT TRY")
         self.tcp_entry.connect("event", self.clear_entry)
         stack_app.pack_start(self.tcp_entry, True, True, 0)
         button = Gtk.Button("Ping")
@@ -228,79 +225,28 @@ class SDNApp(Gtk.Window):
         stack_switcher.set_stack(stack)
         vbox.pack_start(stack_switcher, True, True, 0)
         vbox.pack_start(stack, True, True, 0)
-
-        graph_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.hbox_app.pack_start(graph_box, True, True, 0)
-
-        self.analyzer_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        fig = Figure(figsize=(5,5), dpi=100)
-        ax = fig.add_subplot(111, projection='polar')
-
-        N=20
-        theta = linspace(0.0, 2*pi, N, endpoint=False)
-        radii = 10 * random.rand(N)
-        width = pi / 4 * random.rand(N)
-
-
-        bars = ax.bar(theta, radii, width=width, bottom=0.0)
-
-        for r, bar in zip(radii, bars):
-            bar.set_facecolor(cm.jet(r / 10.))
-            bar.set_alpha(0.5)
-
-        ax.plot()
-        graph_box.pack_start(self.analyzer_box, True, True, 0)
-
-        canvas = FigureCanvas(fig)
-        canvas.set_size_request(400,200)
-        self.analyzer_box.pack_start(canvas, True, True, 0)
-
-        self.topology_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        fig = Figure(figsize=(5,5), dpi=100)
-        ax = fig.add_subplot(111, projection='polar')
-
-        N=20
-        theta = linspace(0.0, 2*pi, N, endpoint=False)
-        radii = 10 * random.rand(N)
-        width = pi / 4 * random.rand(N)
-
-
-        bars = ax.bar(theta, radii, width=width, bottom=0.0)
-
-        for r, bar in zip(radii, bars):
-            bar.set_facecolor(cm.jet(r / 10.))
-            bar.set_alpha(0.5)
-
-        ax.plot()
-
-        
-        graph_box.pack_start(self.topology_box, True, True, 0)
-
-        canvas = FigureCanvas(fig)
-        canvas.set_size_request(400,200)
-        self.topology_box.pack_start(canvas, True, True, 0)
-
-
-
-
-
-
-
-
-
-
-
         self.add(frame)
 
-    def start_controller(self, button, data=None):
-	if self.controller:
-	    self.controller.terminate()
-	self.controller = Popen(["sudo", "ryu-manager", "ControlNode.py"])
+    def restart_controller(self, button, data=None):
+    	if self.controller:
+    	    self.controller.terminate()
+    	self.controller = Popen(["sudo", "ryu-manager", "ControlNode.py"])
+
+    def run(self, button, data=None):
+        with open("control_node_settings", "w") as f:
+            for app in self.apps:
+                f.write("self." + app + " = " + `self.apps[app]` + "\n")
+        if self.controller:
+            #self.controller.send_signal(signal.SIGUSR1)
+            print("Controller exists")
+        else:
+            #self.controller = Popen(["sudo", "ryu-manager", "ControlNode.py"])
+            pass
+        self.switch_screens(None, "forward")
+
     def initial_show(self):
         self.show_all()
         self.back_button.hide()
-        self.analyzer_box.hide()
-        self.topology_box.hide()
         self.set_resizable(False)
 
     def on_toggled(self, button, data):
@@ -311,43 +257,43 @@ class SDNApp(Gtk.Window):
         if data == "back":
             self.back_button.hide()
             self.stack.set_visible_child_name("splash")
-            self.analyzer_box.hide()
-            self.topology_box.hide()
             self.set_size_request(400, 350)
             
         elif data == "forward":
             self.back_button.show()
             self.stack.set_visible_child_name("squirtle")
-            if self.apps["analyzer"]:  
-                self.analyzer_box.show()
-
-            if self.apps["topology"]:
-                self.topology_box.show()
-
 
     def modify_ip(self, button, data):
         data = data[:2]
         if data[0] == "blacklist":
             self._mod_helper(self.blacklist_entry.get_text(), self.blacklist_text_buffer,\
-                            data[1])
+                            data[1], "blacklist")
             self.clear_entry(self.blacklist_entry, None, user_call=True)
         elif data[0] == "sandbox":
             self._mod_helper(self.sandbox_entry.get_text(), self.sandbox_text_buffer,\
-                            data[1])
+                            data[1], "sandbox")
             self.clear_entry(self.sandbox_entry, None, user_call=True)
         elif data[0] == "corrupt":
             self._mod_helper(self.corrupt_entry.get_text(), self.corrupt_text_buffer,\
-                            data[1])
+                            data[1], "corrupt")
             self.clear_entry(self.corrupt_entry, None, user_call=True)
 
-    def _mod_helper(self, ip, buff, mode):
+    def _mod_helper(self, ip, buff, mode, app):
+        start, end = buff.get_bounds()
+        current_view = buff.get_text(start, end, False)
+        current_list = current_view.split()
+        print(current_list)
         if mode == "add":
-            start, end = buff.get_bounds()
-            current_view = buff.get_text(start, end, False)
-            current_list = current_view.split("\n")
             if ip in current_list: return
             current_view += "\n" + ip
-            buff.set_text(current_view)
+        elif mode == "remove":
+            if ip not in current_list: return
+            current_list.remove(ip)
+            current_view = "".join(el + "\n" for el in current_list)
+        buff.set_text(current_view)
+        with open(app, 'a') as f:
+            f.write(mode + " " + ip + "\n")
+            f.flush()
 
 
     def clear_entry(self, entry, event, user_call=False):

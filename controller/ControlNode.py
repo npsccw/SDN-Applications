@@ -36,7 +36,7 @@ from dpid_map import map_switch_dpid
 from utils import *
 from pexpect import spawn
 from random import randint, shuffle
-from os import system
+import signal
 
 class SimpleMonitor(Routing.SimpleSwitch):
 
@@ -52,89 +52,91 @@ class SimpleMonitor(Routing.SimpleSwitch):
     def __init__(self, *args, **kwargs):
         super(SimpleMonitor, self).__init__(*args, **kwargs)
         self.is_active = True
+
         #Topology Discovery
         self.link_discovery = True
         self.port_state = {}          # datapath_id => ports
         self.ports = PortDataState()  # Port class -> PortData class
         self.links = LinkState()      # Link class -> timestamp
         self.link_length = 0
-	self.switch_ports = {}
+        self.switch_ports = {}
 	
         self.dpid_to_ip = map_switch_dpid()
+
+        #NPS SDN Specific Dictionary##################################################
         self.dpid_to_node = {0x00012c59e5107640:1, 0x0001c4346b94a200:2,\
                                          0x0001c4346b99dc00:4, 0x0001c4346b946200:5,\
                                          0x0001c4346b971ec0:6, 0x0001f0921c219d40:13}
+        ##############################################################################
+
         self.hw_addr = '0a:e4:1c:d1:3e:46'
         self.ip_addr = '192.168.1.16'
-	self.active_ips = {}
-	self.arp_table = {}
+        self.active_ips = {}
+        self.arp_table = {}
+
         #SDN Application data structures
         self.blacklist = []
         self.throttle_list = []
 
         #SDN Application Flags
-        self.topology = True
-        self.analyze = False 
+        #This call assigns self.analyze, self.topology,
+        #and self.fingerprint and sets up those apps
+        self._n_fingerprint = True
+        self._n_topology = True
+        self._n_analyze = True
+        self._load_settings()
+        
+        signal.signal(signal.USR1, self._load_settings)
+        
 
-	#Fingerprint App setup
-        self.fingerprint = True
-	self.fingerprints = {}
-        self.fingerprint_list = createFingerPrintList('/ryu/ryu/app/Mid/fingerprint.xml')
-        self.cluster = Cluster()
-        self.session = self.cluster.connect('fingerprints')
-        db = self.session.execute_async("select * from fpspat")
-        for row in db.result():
-            mac_addr = row.mac
-            self.fingerprints[mac_addr] = {'ip':row.ip, 'os':row.os,\
-                                            'switch':row.switch, 'port':row.port,\
-                                            'hostname':row.hostname, 'history':row.history}
-	print("Downloaded Fingerprint Database \n")
-
-        #threads
-        self.analyzer = Analyzer()
-        self.lldp_event = hub.Event()
-        self.link_event = hub.Event()
-        self.threads.append(hub.spawn(self.lldp_loop))
-        self.threads.append(hub.spawn(self.link_loop))
 
 	#The GUI doesn't work because of multiprocessing issues
         #self.parent_conn, child_con = Pipe()
         #self.gui_thread = Process(target=self._gui, args=(child_con,))
         #self.gui_thread.start()
         self.threads.append(hub.spawn(self._monitor))
+        self.threads.append(hub.spawn(self._listener))
 
         self.throttle_list = []
-        with open('V','w') as f:
-            f.flush()
-        with open('D','w') as f:
-            f.flush()
-        with open('L','w') as f:
-            f.flush()	
 
-    def _gui(self, connection):
-        class App(Gtk.Window):
-            def __init__(self, connection):
-                self.connection = connection
-                Gtk.Window.__init__(self, title="Red Button")
-                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-		button = Gtk.Button("Full Graph")
-                button.connect("clicked", self.send_msg, ["create"])
-		box.pack_start(button, True, True, 0)
-                button = Gtk.Button("Spanning Tree")
-                button.connect("clicked", self.send_msg, ["tree"])
-                box.pack_start(button, True, True, 0)
+    def _load_settings(self):
+        with open("control_node_settings", "r") as f:
+            lines = f.readlines()
+            for line in lines():
+                exec(line)
 
-                self.add(box)
-            def send_msg(self, button, data):
-		if len(data) == 3:
-		    data.append(self.entry.get_text())
-                self.connection.send(data)
-                self.connection.send("\n")
+        if self.fingerprint and not self._n_fingerprint:
+            self._n_fingerprint = True
+            self.fingerprints = {}
+            self.fingerprint_list = createFingerPrintList('fingerprint.xml')
+            self.cluster = Cluster()
+            self.session = self.cluster.connect('fingerprints')
+            db = self.session.execute_async("select * from fpspat")
+            for row in db.result():
+                mac_addr = row.mac
+                self.fingerprints[mac_addr] = {'ip':row.ip, 'os':row.os,\
+                                                'switch':row.switch, 'port':row.port,\
+                                                'hostname':row.hostname, 'history':row.history}
+            print("Downloaded Fingerprint Database \n")
 
-        win = App(connection)
-        win.connect("delete-event", Gtk.main_quit)
-        win.show_all()
-        Gtk.main()
+        
+        if self.analyze and not self._n_analyze:
+            self.analyzer = Analyzer()
+            self._n_analyze = True
+            with open('V','w') as f:
+                f.flush()
+            with open('D','w') as f:
+                f.flush()
+            with open('L','w') as f:
+                f.flush()   
+
+        if self.topology and not self._n_topology:
+            self._n_topology = True
+            self.lldp_event = hub.Event()
+            self.link_event = hub.Event()
+            self.threads.append(hub.spawn(self.lldp_loop))
+            self.threads.append(hub.spawn(self.link_loop))
+ 
 
     def switch_on_all_ports(self,username="manager", password="ccw"):
         for dp in self.dpids:
@@ -142,7 +144,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
             print("logging into " + self.dpid_to_ip[dp])
             s = spawn("ssh %s@%s" %(username, self.dpid_to_ip[dp]))
             s.expect(".*assword")
-	    s.sendline(password)
+	       s.sendline(password)
             s.expect("Press any key to continue")
             s.sendline("\r")
             s.sendline("config")
@@ -188,44 +190,48 @@ class SimpleMonitor(Routing.SimpleSwitch):
         print("CREATED SPANNING TREE")
 
     #Todo: Add listener and messages
+    def _listener(self):
+        while True:
+            with open("commands", "r") as f:
+                for line in f.readlines():
+                    exec(line)
+            with open("commands", "w") as f:
+                f.flush()
+            hub.sleep(2)
+
     def _monitor(self):
-	while self.dpids == {}:
-	    print("Waiting for live datapaths")
-	    hub.sleep(2)
+        if self.topology:
+        	while self.dpids == {}:
+        	    print("Waiting for live datapaths")
+        	    hub.sleep(2)
 
-	with open("ipList.txt", "r") as f:
-	    lines = f.readlines()
-	
-	for __ in range(1): #variable number of loops for complete scan
-	    shuffle(lines)
-	    #Deleting flows ruins the LLDP flows	
-	    #for i in range(1,15):
-		#if i == 7: continue
-		#print("Deleting flows on {}".format(i))
-		#system("dpctl del-flows tcp:10.10.0.{}:6655".format(i))
-		
-	    for line in lines:
-		line = line.strip()
-		print("Sending ARP to " + line)
-	        self._handle_arp_rq(line)
-	        hub.sleep(2)
-	
-	print("Finished mapping network")
-	print(self.active_ips)
-	print("Number of hosts up: " + `len(self.active_ips)`)
+        	with open("ipList.txt", "r") as f:
+        	    lines = f.readlines()
+        	
+    	    shuffle(lines)
+    	    for line in lines:
+    		line = line.strip()
+    		print("Sending ARP to " + line)
+    	        self._handle_arp_rq(line)
+    	        hub.sleep(2)
+    	
+        	print("Finished mapping network")
+        	print(self.active_ips)
+        	print("Number of hosts up: " + `len(self.active_ips)`)
 
-		    	
-#        while True:
-#             for dp in self.dpids:
-#                 if dp in self.dpid_to_node:
-#                    self._request_port_stats(self.dpids[dp])
-#             hub.sleep(2)
+        while True:
+            if self.analyze:
+                for dp in self.dpids:
+                    if dp in self.dpid_to_node:
+                       self._request_port_stats(self.dpids[dp])
+        
+            hub.sleep(2)
 	
     def _handle_arp_rq(self, dst_ip):
-	pkt = packet.Packet()
-	pkt.add_protocol(ethernet.ethernet(ethertype=0x806,\
-                                           dst='ff:ff:ff:ff:ff:ff',\
-                                           src=self.hw_addr))
+    	pkt = packet.Packet()
+    	pkt.add_protocol(ethernet.ethernet(ethertype=0x806,\
+                                               dst='ff:ff:ff:ff:ff:ff',\
+                                               src=self.hw_addr))
         pkt.add_protocol(arp.arp(opcode=arp.ARP_REQUEST,\
                                  src_mac=self.hw_addr,\
                                  src_ip=self.ip_addr,\
@@ -234,66 +240,66 @@ class SimpleMonitor(Routing.SimpleSwitch):
         self._send_packet(pkt)
         
     def _send_packet(self, pkt):
-	for dpid in self.dpids:
-	    datapath = self.dpids[dpid]
-	    ofproto = datapath.ofproto
-	    actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
-    	    pkt.serialize()
-	    out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=0xffffffff,\
-						in_port=ofproto.OFPP_CONTROLLER, actions=actions,\
-						data=pkt.data)
-	    datapath.send_msg(out)
+    	for dpid in self.dpids:
+    	    datapath = self.dpids[dpid]
+    	    ofproto = datapath.ofproto
+    	    actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+        	    pkt.serialize()
+    	    out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=0xffffffff,\
+    						in_port=ofproto.OFPP_CONTROLLER, actions=actions,\
+    						data=pkt.data)
+    	    datapath.send_msg(out)
 
     def _handle_arp_reply(self, pkt_arp, port, dpid):
-	if pkt_arp.opcode != arp.ARP_REPLY:
-	    return
-	if pkt_arp.dst_mac != self.hw_addr:
-	    return
-	if pkt_arp.src_ip not in self.active_ips:
-	    print("ARP from " + pkt_arp.src_ip + "\n")
-	    self.active_ips[pkt_arp.src_ip] =  [dpid, port]
-	    self.arp_table[pkt_arp.src_ip] = pkt_arp.src_mac
+    	if pkt_arp.opcode != arp.ARP_REPLY:
+    	    return
+    	if pkt_arp.dst_mac != self.hw_addr:
+    	    return
+    	if pkt_arp.src_ip not in self.active_ips:
+    	    print("ARP from " + pkt_arp.src_ip + "\n")
+    	    self.active_ips[pkt_arp.src_ip] =  [dpid, port]
+    	    self.arp_table[pkt_arp.src_ip] = pkt_arp.src_mac
     
     def draw_graph(self, timeout, draw=False):
-	G = nx.Graph()
+    	G = nx.Graph()
 
-        plt.clf()
-        labels = {}
-        nodes = []
-	host_nodes = []
-        for id in self.dpids:
-            G.add_node(hex(id))
-            labels[hex(id)] = hex(id)
-            nodes.append(hex(id))
+            plt.clf()
+            labels = {}
+            nodes = []
+    	host_nodes = []
+            for id in self.dpids:
+                G.add_node(hex(id))
+                labels[hex(id)] = hex(id)
+                nodes.append(hex(id))
 
-	
-        for link in self.links:
-            G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
-	for ip in self.active_ips:
-	    if ip not in host_nodes:
-	    	G.add_node(ip)
-	    	G.add_edge(self.active_ips[ip][0], ip)
-		host_nodes.append(ip)
-
-        self.graph = G.copy()
-        pos = nx.spring_layout(G)
-	
-	G = nx.Graph()
-	
-	if draw:
-            nx.draw(G)
-            nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color='FireBrick',\
-                                node_size=500, alpha=0.8)
-	    nx.draw_networkx_nodes(G, pos, nodelist=host_nodes, node_color='DarkGoldenRod',\
-				node_size=200, alpha=0.8)
-
-	    for link in self.links:
+    	
+            for link in self.links:
                 G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
-	    for ip in self.active_ips:
-		G.add_edge(self.active_ips[ip][0],ip)
+    	for ip in self.active_ips:
+    	    if ip not in host_nodes:
+    	    	G.add_node(ip)
+    	    	G.add_edge(self.active_ips[ip][0], ip)
+    		host_nodes.append(ip)
 
-	    nx.draw_networkx_edges(G, pos)
-     	    plt.pause(timeout)
+            self.graph = G.copy()
+            pos = nx.spring_layout(G)
+    	
+    	G = nx.Graph()
+    	
+    	if draw:
+                nx.draw(G)
+                nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color='FireBrick',\
+                                    node_size=500, alpha=0.8)
+    	    nx.draw_networkx_nodes(G, pos, nodelist=host_nodes, node_color='DarkGoldenRod',\
+    				node_size=200, alpha=0.8)
+
+    	    for link in self.links:
+                    G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
+    	    for ip in self.active_ips:
+    		G.add_edge(self.active_ips[ip][0],ip)
+
+    	    nx.draw_networkx_edges(G, pos)
+         	    plt.pause(timeout)
 
     def _request_port_stats(self, datapath):
 		ofproto = datapath.ofproto
@@ -479,14 +485,14 @@ class SimpleMonitor(Routing.SimpleSwitch):
 	pkt_dhcp = pkt.get_protocol(dhcp.dhcp)
 	pkt_arp = pkt.get_protocol(arp.arp)
 	if pkt_arp:
-            self._handle_arp_reply(pkt_arp, ev.msg.in_port, hex(msg.datapath.id))   
+        self._handle_arp_reply(pkt_arp, ev.msg.in_port, hex(msg.datapath.id))   
         if self.fingerprint:
-	    if pkt_dhcp:
-		print("----------------------------------")
-		print(pkt_dhcp.yiaddr)
-		print(pkt_dhcp.op)
-		print("----------------------------------")
-	    self._dhcp_handler(msg)
+    	    if pkt_dhcp:
+    		print("----------------------------------")
+    		print(pkt_dhcp.yiaddr)
+    		print(pkt_dhcp.op)
+    		print("----------------------------------")
+    	    self._dhcp_handler(msg)
 		
         if self.topology:
             self._lldp_handler(msg)
@@ -549,7 +555,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
         fp = self.fingerprints[mac]
         changes = []
         time = str(datetime.now())
-	skip_switch = False
+	    skip_switch = False
         for prop,val in [('ip', source_ip), ('os', hitlist[0][0]),('hostname', hostname)]:
             if fp[prop] != val:
                 print("The " + prop + " changed")
@@ -577,7 +583,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
             #print("Not LLDP Packet")
             return
 
-	dst_dpid = msg.datapath.id
+        dst_dpid = msg.datapath.id
         if msg.datapath.ofproto.OFP_VERSION == ofproto_v1_0.OFP_VERSION:
             dst_port_no = msg.in_port
         elif msg.datapath.ofproto.OFP_VERSION >= ofproto_v1_2.OFP_VERSION:
@@ -727,48 +733,48 @@ class SimpleMonitor(Routing.SimpleSwitch):
     def _modify_blacklist(self, ipaddr, mode, dl_type=0x800):
        	res = dot_to_dec(ipaddr)
 
-	if mode == "add":
-	    if ipaddr in self.blacklist:
-	        return
+    	if mode == "add":
+    	    if ipaddr in self.blacklist:
+    	        return
 	    self.blacklist.append(ipaddr)
-	elif mode == "rmv":
-	    if ipaddr not in self.blacklist:
-	        return
+    	elif mode == "rmv":
+    	    if ipaddr not in self.blacklist:
+    	        return
 	    self.blacklist.remove(ipaddr)
-	print(self.blacklist)
-	for dp in self.dpids:
-	    datapath = self.dpids[dp]
-	    ofproto = datapath.ofproto
-            match = datapath.ofproto_parser.OFPMatch(dl_type=dl_type, nw_src=res)
 
-	    if mode == "add":
-	        command = ofproto.OFPFC_ADD
-	    elif mode == "rmv":
-	        command = ofproto.OFPFC_DELETE
-	    mod = datapath.ofproto_parser.OFPFlowMod(datapath=datapath, match=match,\
-                                cookie=0,command=command, idle_timeout=0, hard_timeout=0,\
-                                priority=ofproto.OFP_DEFAULT_PRIORITY+5,\
-                                flags=ofproto.OFPFF_SEND_FLOW_REM, actions=None)
+    	for dp in self.dpids:
+    	    datapath = self.dpids[dp]
+    	    ofproto = datapath.ofproto
+                match = datapath.ofproto_parser.OFPMatch(dl_type=dl_type, nw_src=res)
+
+    	    if mode == "add":
+    	        command = ofproto.OFPFC_ADD
+    	    elif mode == "rmv":
+    	        command = ofproto.OFPFC_DELETE
+    	    mod = datapath.ofproto_parser.OFPFlowMod(datapath=datapath, match=match,\
+                                    cookie=0,command=command, idle_timeout=0, hard_timeout=0,\
+                                    priority=ofproto.OFP_DEFAULT_PRIORITY+5,\
+                                    flags=ofproto.OFPFF_SEND_FLOW_REM, actions=None)
 
             datapath.send_msg(mod)			
 	
     #Changes transmission rate on a switch's port -- meant for HP switches
     #@todo: make more general? Throttle switches that see an IP address
     def _modify_throttle(self, switch_ip, port, mode, username="manager", password="ccw"):
-	if mode == "add":
-    	    if ipaddr in self.throttle_list:
+    	if mode == "add":
+        	    if ipaddr in self.throttle_list:
+        	        return
+    	    self.throttle_list.append((switch, port))
+    	    command = 'interface ethernet' + `port` + ' rate-limit all out kbps 10000'
+    	elif mode == "rmv":
+    	    if ipaddr not in self.throttle_list:
     	        return
-	    self.throttle_list.append((switch, port))
-	    command = 'interface ethernet' + `port` + ' rate-limit all out kbps 10000'
-	elif mode == "rmv":
-	    if ipaddr not in self.throttle_list:
-	        return
-    	    self.throttle_list.remove((switch, port))
-	    command = 'no interface ethernet' + `port` + ' rate-limit all out kbps 10000'
-	    
-	print("Starting throttle command")
-	s = pexpect.spawn("ssh %s@%s" %(username, switch_ip))
-	s.expect('.*assword: ')
+        	    self.throttle_list.remove((switch, port))
+    	    command = 'no interface ethernet' + `port` + ' rate-limit all out kbps 10000'
+    	    
+    	print("Starting throttle command")
+    	s = pexpect.spawn("ssh %s@%s" %(username, switch_ip))
+    	s.expect('.*assword: ')
         # Send the password
         s.sendline(password)
         s.expect('Press any key to continue')
