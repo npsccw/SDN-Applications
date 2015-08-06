@@ -9,7 +9,7 @@ import signal
 class SDNApp(Gtk.Window):
     def __init__(self, connection=None):
         self.controller = None
-        self.apps = {"analyze": False, "topology": False, "fingerprint":False}
+	self.apps = {"analyze": False, "topology": False, "fingerprint":False}
         Gtk.Window.__init__(self, title="NPS SDN Application")
         self.set_border_width(10)
         self.set_default_size(400, 200)
@@ -244,8 +244,8 @@ class SDNApp(Gtk.Window):
         button = Gtk.Button("Generate Spanning Tree")
         button.connect("clicked", self.send_command, "self.create_spanning_tree()")
         vgrid.attach(button, 0,5,1,2)
-        button = Gtk.Button("New Button")
-        button.connect("clicked", tool)
+        button = Gtk.Button("Map Hosts")
+        button.connect("clicked", self.send_command, "self.map_hosts(0)")
         vgrid.attach(button, 0,7,1,2)
         button = Gtk.Button("New Button")
         button.connect("clicked", tool)
@@ -269,11 +269,11 @@ class SDNApp(Gtk.Window):
             for app in self.apps:
                 f.write("self." + app + " = " + `self.apps[app]` + "\n")
         if self.controller:
-            #self.controller.send_signal(signal.SIGUSR1)
+	    print(self.controller)
+            self.controller.send_signal(signal.SIGUSR1)
             print("Controller exists")
         else:
-            #self.controller = Popen(["sudo", "ryu-manager", "ControlNode.py"])
-            pass
+            self.controller = Popen(["sudo", "ryu-manager", "ControlNode.py"])
         self.switch_screens(None, "forward")
 
     def send_command(self, button, data):
@@ -319,7 +319,6 @@ class SDNApp(Gtk.Window):
         start, end = buff.get_bounds()
         current_view = buff.get_text(start, end, False)
         current_list = current_view.split()
-        print(current_list)
         if mode == "add":
             if ip in current_list: return
             current_view += "\n" + ip
@@ -328,10 +327,9 @@ class SDNApp(Gtk.Window):
             current_list.remove(ip)
             current_view = "".join(el + "\n" for el in current_list)
         buff.set_text(current_view)
-        with open(app, 'a') as f:
-            f.write(mode + " " + ip + "\n")
-            f.flush()
-
+	if app == "blacklist":
+	    with open("commands", "a") as f:
+		f.write("self._modify_blacklist(" + `ip` + "," + `mode` + ")\n")
 
     def clear_entry(self, entry, event, user_call=False):
         if user_call or event.type == Gdk.EventType.BUTTON_RELEASE:
@@ -340,17 +338,25 @@ class SDNApp(Gtk.Window):
     def packet_send(self, button, data):
         if data == "ping":
             self.add_history(self.ping_text_buffer)
+	    self.send_command(None, "self.send_ping("+`self.ping_entry.get_text()` + ")\n")
         elif data == "tcp":
             self.add_history(self.tcp_text_buffer)
 
+    #Todo: Add IPs we've pinged to the text window
     def add_history(self, buff):
-        print("I'm too sleepy")
+	pass
 
+    #Todo: Finish this
     def clear_history(self, button, data=None):
-        print("clearing data")
+	pass
 
 if __name__ == "__main__":
+    def quitter(window, data):
+	if window.controller:
+		window.controller.terminate()
+	Gtk.main_quit(window)
+
     win = SDNApp()
-    win.connect("delete-event", Gtk.main_quit)
+    win.connect("delete-event", quitter)
     win.initial_show()
     Gtk.main()

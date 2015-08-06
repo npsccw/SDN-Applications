@@ -2,13 +2,11 @@ import logging
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, set_ev_cls, DEAD_DISPATCHER
 from ryu.lib import hub
+from ryu.lib.ip import ipv4_to_bin
 from Link import Link, LinkState
 from Switch import Switch
 from LLDPPacket import LLDPPacket
 from Port import Port, PortState, PortData, PortDataState
-from numpy import matlib
-from datetime import datetime
-from operator import attrgetter
 import Routing
 from ryu.ofproto import ofproto_v1_0
 from ryu.lib import addrconv, hub
@@ -17,18 +15,14 @@ from ryu.ofproto.ether import ETH_TYPE_LLDP
 from ryu.topology import event
 from ryu.ofproto import nx_match
 
-from networkx.algorithms.approximation.vertex_cover import min_weighted_vertex_cover
-from multiprocessing import Process, Pipe
 import time
 
 import networkx as nx
 import pexpect
-from gi.repository import Gtk
 from DHCPFingerprint import *
-from ryu.lib.packet import packet, ethernet, lldp, arp, dhcp
+from ryu.lib.packet import packet, ethernet, lldp, arp, dhcp, icmp, ipv4
 
 from datetime import datetime
-import numpy as np
 import matplotlib.pyplot as plt
 import time
 from cassandra.cluster import Cluster
@@ -37,6 +31,8 @@ from utils import *
 from pexpect import spawn
 from random import randint, shuffle
 import signal
+from os import system
+from Analyzer import Analyzer
 
 class SimpleMonitor(Routing.SimpleSwitch):
 
@@ -86,7 +82,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
         self._n_analyze = True
         self._load_settings()
         
-        signal.signal(signal.USR1, self._load_settings)
+        signal.signal(signal.SIGUSR1, self._load_settings)
         
 
 
@@ -99,14 +95,15 @@ class SimpleMonitor(Routing.SimpleSwitch):
 
         self.throttle_list = []
 
-    def _load_settings(self):
+    def _load_settings(self, signal=None, frame=None):
+	print("Loading the settings file")
         with open("control_node_settings", "r") as f:
-            lines = f.readlines()
-            for line in lines():
+            for line in f.readlines():
                 exec(line)
 
-        if self.fingerprint and not self._n_fingerprint:
-            self._n_fingerprint = True
+
+        if self.fingerprint and self._n_fingerprint:
+            self._n_fingerprint = False
             self.fingerprints = {}
             self.fingerprint_list = createFingerPrintList('fingerprint.xml')
             self.cluster = Cluster()
@@ -120,18 +117,17 @@ class SimpleMonitor(Routing.SimpleSwitch):
             print("Downloaded Fingerprint Database \n")
 
         
-        if self.analyze and not self._n_analyze:
+        if self.analyze and self._n_analyze:
             self.analyzer = Analyzer()
-            self._n_analyze = True
+            self._n_analyze = False
             with open('V','w') as f:
                 f.flush()
             with open('D','w') as f:
                 f.flush()
             with open('L','w') as f:
-                f.flush()   
-
-        if self.topology and not self._n_topology:
-            self._n_topology = True
+                f.flush()
+        if self.topology and self._n_topology:
+            self._n_topology = False
             self.lldp_event = hub.Event()
             self.link_event = hub.Event()
             self.threads.append(hub.spawn(self.lldp_loop))
@@ -145,17 +141,18 @@ class SimpleMonitor(Routing.SimpleSwitch):
             
         for dp in self.dpids:
             datapath = self.dpids[dp]
-            print("Adding lldp flow onto {}".format(dp))
+            print("Adding flows onto {}".format(dp))
             self._create_lldp_flow(datapath)
-
-
+	    self._create_arp_flow(datapath)
+	    self._create_icmp_flow(datapath)
+    
     def switch_on_all_ports(self,username="manager", password="ccw"):
         for dp in self.dpids:
             dp = hex(dp)
             print("logging into " + self.dpid_to_ip[dp])
             s = spawn("ssh %s@%s" %(username, self.dpid_to_ip[dp]))
             s.expect(".*assword")
-	        s.sendline(password)
+	    s.sendline(password)
             s.expect("Press any key to continue")
             s.sendline("\r")
             s.sendline("config")
@@ -212,31 +209,35 @@ class SimpleMonitor(Routing.SimpleSwitch):
 
     def _monitor(self):
         if self.topology:
-        	while self.dpids == {}:
-        	    print("Waiting for live datapaths")
-        	    hub.sleep(2)
-
-        	with open("ipList.txt", "r") as f:
-        	    lines = f.readlines()
-        	
-    	    shuffle(lines)
-    	    for line in lines:
-    		line = line.strip()
-    		print("Sending ARP to " + line)
-    	        self._handle_arp_rq(line)
-    	        hub.sleep(2)
-    	
-        	print("Finished mapping network")
-        	print(self.active_ips)
-        	print("Number of hosts up: " + `len(self.active_ips)`)
+            while self.dpids == {}:
+        	print("Waiting for live datapaths")
+        	hub.sleep(2)
+	    #self.map_hosts()
 
         while True:
             if self.analyze:
                 for dp in self.dpids:
                     if dp in self.dpid_to_node:
                        self._request_port_stats(self.dpids[dp])
-        
+      	    if self.topology:
+		self.draw_graph(1, draw=True)  
             hub.sleep(2)
+    
+    def map_hosts(self,time=2):
+        with open("ipList.txt", "r") as f:
+            lines = f.readlines()
+        	
+    	shuffle(lines)
+    	for line in lines:
+    	    line = line.strip()
+    	    print("Sending ARP to " + line)
+    	    self._handle_arp_rq(line)
+            hub.sleep(time)
+    	
+        print("Finished mapping network")
+        print(self.active_ips)
+        print("Number of hosts up: " + `len(self.active_ips)`)
+
 	
     def _handle_arp_rq(self, dst_ip):
     	pkt = packet.Packet()
@@ -248,58 +249,109 @@ class SimpleMonitor(Routing.SimpleSwitch):
                                  src_ip=self.ip_addr,\
                                  dst_mac='00:00:00:00:00:00',\
                                  dst_ip=dst_ip))
-        self._send_packet(pkt)
-        
-    def _send_packet(self, pkt):
+        self._flood_packet(pkt)
+    
+    def send_ping(self, ip_dst):
+	pkt = packet.Packet()
+	if ip_dst in self.arp_table:
+	    mac_dst = self.arp_table[ip_dst]
+	else:
+	    return
+	pkt.add_protocol(ethernet.ethernet(ethertype=0x800,dst=mac_dst,\
+                                                           src=self.hw_addr))
+
+        pkt.add_protocol(ipv4.ipv4(dst= ip_dst, src=self.ip_addr,proto=1))
+        pkt.add_protocol(icmp.icmp(type_= 8, code=0, csum=0))#Not sure about echo
+	print("Ping packet sent")
+	self._flood_packet(pkt)
+
+    def _handle_icmp_reply(self, pkt_icmp, pkt_ipv4):
+        if pkt_icmp.type != icmp.ICMP_ECHO_REPLY: return
+        if pkt_ipv4.dst != self.ip_addr: return
+	print("PING RECEIVED THANK GOD")
+
+
+    def _flood_packet(self, pkt):
     	for dpid in self.dpids:
     	    datapath = self.dpids[dpid]
     	    ofproto = datapath.ofproto
     	    actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
-        	    pkt.serialize()
+       	    pkt.serialize()
     	    out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=0xffffffff,\
     						in_port=ofproto.OFPP_CONTROLLER, actions=actions,\
     						data=pkt.data)
     	    datapath.send_msg(out)
-
-    def _handle_arp_reply(self, pkt_arp, port, dpid):
-    	if pkt_arp.opcode != arp.ARP_REPLY:
-    	    return
-    	if pkt_arp.dst_mac != self.hw_addr:
-    	    return
-    	if pkt_arp.src_ip not in self.active_ips:
-    	    print("ARP from " + pkt_arp.src_ip + "\n")
-    	    self.active_ips[pkt_arp.src_ip] =  [dpid, port]
-    	    self.arp_table[pkt_arp.src_ip] = pkt_arp.src_mac
     
+    def _send_packet(self, pkt, datapath):
+	#Pick a random datapath to send from	
+        #datapath = self.dpids[self.dpids.keys()[randint(0,len(self.dpids)-1)]]
+        ofproto = datapath.ofproto
+	pkt.serialize()
+	ether_pkt = pkt.get_protocol(ethernet.ethernet)
+	print("Sending packet out: " + `self.mac_to_port[datapath.id][ether_pkt.dst]`)
+        actions = [datapath.ofproto_parser.OFPActionOutput(self.mac_to_port[datapath.id]\
+							[ether_pkt.dst])]
+        out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=0xffffffff,\
+                                                in_port=ofproto.OFPP_CONTROLLER, actions=actions,\
+                                                data=pkt.data)
+        datapath.send_msg(out)
+
+    #Finish ARP redesignation
+    def _handle_arp_reply(self, pkt_arp, port, dpid):
+    	if pkt_arp.opcode == arp.ARP_REPLY and pkt_arp.dst_mac == self.hw_addr:
+    	    if pkt_arp.src_ip not in self.active_ips:
+    	        print("ARP from " + pkt_arp.src_ip + "\n")
+    	        self.active_ips[pkt_arp.src_ip] =  [dpid, port]
+    	        self.arp_table[pkt_arp.src_ip] = pkt_arp.src_mac
+    	        if self.topology:
+                    self.draw_graph(1, draw=True)
+	if pkt_arp.opcode == arp.ARP_REQUEST and pkt_arp.src_ip != self.ip_addr:
+	    #print("ARP Reqest from: " + pkt_arp.src_mac + " requesting: " + pkt_arp.dst_ip)
+	    if pkt_arp.dst_ip not in self.arp_table: return
+            #construct and send ARP reply
+	    reply_pkt = packet.Packet()
+            reply_pkt.add_protocol(ethernet.ethernet(ethertype=0x806,\
+                                               dst=pkt_arp.src_mac,\
+                                               src=self.arp_table[pkt_arp.dst_ip]))
+            reply_pkt.add_protocol(arp.arp(opcode=arp.ARP_REPLY,\
+                                 src_mac=self.arp_table[pkt_arp.dst_ip],\
+                                 src_ip=pkt_arp.dst_ip,\
+                                 dst_mac=pkt_arp.src_mac,\
+                                 dst_ip=pkt_arp.src_ip))
+	    print("Responded to ARP Request: " )
+	    print("Gave [" + pkt_arp.src_mac + "," + pkt_arp.src_ip + "]" +\
+			"[" + pkt_arp.dst_ip + "," + self.arp_table[pkt_arp.dst_ip] + "]") 
+	    self._send_packet(reply_pkt, self.dpids[int(dpid, 16)]) 
+
     def draw_graph(self, timeout, draw=False):
     	G = nx.Graph()
 
-            plt.clf()
-            labels = {}
-            nodes = []
+        plt.clf()
+        labels = {}
+        nodes = []
     	host_nodes = []
-            for id in self.dpids:
-                G.add_node(hex(id))
-                labels[hex(id)] = hex(id)
-                nodes.append(hex(id))
+        for id in self.dpids:
+            G.add_node(hex(id))
+            labels[hex(id)] = hex(id)
+            nodes.append(hex(id))
 
     	
-            for link in self.links:
-                G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
+        for link in self.links:
+            G.add_edge(hex(link.src.dpid), hex(link.dst.dpid))
     	for ip in self.active_ips:
     	    if ip not in host_nodes:
     	    	G.add_node(ip)
     	    	G.add_edge(self.active_ips[ip][0], ip)
     		host_nodes.append(ip)
 
-            self.graph = G.copy()
-            pos = nx.spring_layout(G)
+        self.graph = G.copy()
+        pos = nx.spring_layout(G)
     	
     	G = nx.Graph()
     	
     	if draw:
-                nx.draw(G)
-                nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color='FireBrick',\
+            nx.draw(G)
+            nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color='FireBrick',\
                                     node_size=500, alpha=0.8)
     	    nx.draw_networkx_nodes(G, pos, nodelist=host_nodes, node_color='DarkGoldenRod',\
     				node_size=200, alpha=0.8)
@@ -310,7 +362,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
     		G.add_edge(self.active_ips[ip][0],ip)
 
     	    nx.draw_networkx_edges(G, pos)
-         	    plt.pause(timeout)
+            plt.pause(timeout)
 
     def _request_port_stats(self, datapath):
 		ofproto = datapath.ofproto
@@ -381,6 +433,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
             [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change_handler(self, ev):
         datapath = ev.datapath
+
         if ev.state == MAIN_DISPATCHER:
             
             dp_multiple_conns = False
@@ -392,20 +445,14 @@ class SimpleMonitor(Routing.SimpleSwitch):
 
             self._register(datapath)
             switch = self._get_switch(datapath.id)
+
             if not dp_multiple_conns:
                 self.send_event_to_observers(event.EventSwitchEnter(switch))
                 
             
             self._create_lldp_flow(datapath)
-    		#Add ARP Rule when using OpenFlow v1.3
-                    #match = datapath.ofproto_parser.OFPMatch(dl_type=0x0806)
-                    #actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
-                    #mod = datapath.ofproto_parser.OFPFlowMod(
-                    #    datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
-                    #    idle_timeout=0, hard_timeout=0, actions=actions,
-                    #    priority=0xFFFF)
-                    #datapath.send_msg(mod)
-		
+	    self._create_arp_flow(datapath)
+    	    self._create_icmp_flow(datapath)
 
 
             if not dp_multiple_conns:
@@ -414,6 +461,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
                         self._port_added(port)
                         
         elif ev.state == DEAD_DISPATCHER:
+	    switch = self._get_switch(datapath.id)
             if datapath.id in self.dpids:
                 self.logger.debug('unregister datapath: %016x', datapath.id)
                 self._unregister(datapath)
@@ -423,8 +471,20 @@ class SimpleMonitor(Routing.SimpleSwitch):
                 if not port.is_reserved():
                     self.ports.del_port(port)
                     self._link_down(port)
-                    
-        self.lldp_event.set()
+        if self.topology:
+            self.lldp_event.set()
+
+    def _create_icmp_flow(self,datapath):
+	ofproto = datapath.ofproto
+        ofproto_parser = datapath.ofproto_parser
+	nw_dst = struct.unpack('!I', ipv4_to_bin(self.ip_addr))[0]    
+	match = datapath.ofproto_parser.OFPMatch(dl_type=0x800, nw_proto=0x01, nw_dst=nw_dst)
+        actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+        mod = datapath.ofproto_parser.OFPFlowMod(
+                datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
+                idle_timeout=0, hard_timeout=0, actions=actions,
+                priority=0xFFFF)
+        datapath.send_msg(mod)
 
     def _create_lldp_flow(self, datapath):
         ofproto = datapath.ofproto
@@ -432,12 +492,23 @@ class SimpleMonitor(Routing.SimpleSwitch):
         if ofproto.OFP_VERSION == ofproto_v1_0.OFP_VERSION:
             #Add LLDP Rule
             match = datapath.ofproto_parser.OFPMatch(dl_type=0x88cc)
-                    actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
-                    mod = datapath.ofproto_parser.OFPFlowMod(
+            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+            mod = datapath.ofproto_parser.OFPFlowMod(
                         datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
                         idle_timeout=0, hard_timeout=0, actions=actions,
                         priority=0xFFFF)
             datapath.send_msg(mod)
+
+    def _create_arp_flow(self, datapath):
+        ofproto = datapath.ofproto
+	ofproto_parser = datapath.ofproto_parser
+        match = datapath.ofproto_parser.OFPMatch(dl_type=0x0806)
+        actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+        mod = datapath.ofproto_parser.OFPFlowMod(
+                datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
+                idle_timeout=0, hard_timeout=0, actions=actions,
+                priority=0xFFFF)
+        datapath.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):
@@ -497,8 +568,12 @@ class SimpleMonitor(Routing.SimpleSwitch):
 	pkt = packet.Packet(msg.data)
 	pkt_dhcp = pkt.get_protocol(dhcp.dhcp)
 	pkt_arp = pkt.get_protocol(arp.arp)
+	pkt_icmp = pkt.get_protocol(icmp.icmp)
+	pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+	if pkt_icmp:
+	    self._handle_icmp_reply(pkt_icmp, pkt_ipv4)
 	if pkt_arp:
-        self._handle_arp_reply(pkt_arp, ev.msg.in_port, hex(msg.datapath.id))   
+            self._handle_arp_reply(pkt_arp, ev.msg.in_port, hex(msg.datapath.id))   
         if self.fingerprint:
     	    if pkt_dhcp:
     		print("----------------------------------")
@@ -568,7 +643,6 @@ class SimpleMonitor(Routing.SimpleSwitch):
         fp = self.fingerprints[mac]
         changes = []
         time = str(datetime.now())
-	    skip_switch = False
         for prop,val in [('ip', source_ip), ('os', hitlist[0][0]),('hostname', hostname)]:
             if fp[prop] != val:
                 print("The " + prop + " changed")
@@ -750,7 +824,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
     	    if ipaddr in self.blacklist:
     	        return
 	    self.blacklist.append(ipaddr)
-    	elif mode == "rmv":
+    	elif mode == "remove":
     	    if ipaddr not in self.blacklist:
     	        return
 	    self.blacklist.remove(ipaddr)
@@ -758,11 +832,13 @@ class SimpleMonitor(Routing.SimpleSwitch):
     	for dp in self.dpids:
     	    datapath = self.dpids[dp]
     	    ofproto = datapath.ofproto
-                match = datapath.ofproto_parser.OFPMatch(dl_type=dl_type, nw_src=res)
+            match = datapath.ofproto_parser.OFPMatch(dl_type=dl_type, nw_src=res)
 
     	    if mode == "add":
+		print("Adding " + ipaddr + " to blacklist")
     	        command = ofproto.OFPFC_ADD
-    	    elif mode == "rmv":
+    	    elif mode == "remove":
+		print("Removing " + ipaddr + " to blacklsit")
     	        command = ofproto.OFPFC_DELETE
     	    mod = datapath.ofproto_parser.OFPFlowMod(datapath=datapath, match=match,\
                                     cookie=0,command=command, idle_timeout=0, hard_timeout=0,\
@@ -775,14 +851,12 @@ class SimpleMonitor(Routing.SimpleSwitch):
     #@todo: make more general? Throttle switches that see an IP address
     def _modify_throttle(self, switch_ip, port, mode, username="manager", password="ccw"):
     	if mode == "add":
-        	    if ipaddr in self.throttle_list:
-        	        return
+            if ipaddr in self.throttle_list: return
     	    self.throttle_list.append((switch, port))
     	    command = 'interface ethernet' + `port` + ' rate-limit all out kbps 10000'
     	elif mode == "rmv":
-    	    if ipaddr not in self.throttle_list:
-    	        return
-        	    self.throttle_list.remove((switch, port))
+    	    if ipaddr not in self.throttle_list: return
+            self.throttle_list.remove((switch, port))
     	    command = 'no interface ethernet' + `port` + ' rate-limit all out kbps 10000'
     	    
     	print("Starting throttle command")
@@ -797,166 +871,5 @@ class SimpleMonitor(Routing.SimpleSwitch):
         s.sendline(command)
         s.sendline('logo')
         s.sendline('y')
-        print('Successful')
+        print('Throttle Successful')
 
-	    
-	        
-class Analyzer:
-
-	def __init__(self):
-		self.timestep = 1
-		self.dpid_to_node = {0x00012c59e5107640:1, 0x0001c4346b94a200:2,\
-					 0x0001c4346b99dc00:4, 0x0001c4346b946200:5,\
-					 0x0001c4346b971ec0:6, 0x0001f0921c219d40:13}
-
-		self.name_to_index = {1:0, 2:1, 3:2, 4:3, 5:4, 6:5, 8:6, 11:7, 12:8,\
-					13:9, 14:10}		
-		self.colors = {0:"Blue", 1:"BlueViolet", 2:"CadetBlue", 3:"Coral", 4:"DarkGreen",\
-                		5:"DarkGoldenRod", 6:"DarkRed", 7:"DarkTurquoise",\
-				 8:"DarkOliveGreen", 9:"DeepSkyBlue", 10:"FireBrick"}
-		self.names = {0:'Chicago', 1:'Sunnyvale', 2:'Los Angeles', 3:'Salt Lake City', 4:'Denver',\
-            			5:'El Paso', 6:'D.C.', 7:'Kansas City', 8:'Seattle', 9:'Houston',\
-             			10:'Nashville'}
-		self.links = {(1,14):Link(1,14), (1,8):Link(1,8),\
-				(1,11):Link(1,11), (1,12):Link(1,12),\
-				(2,3):Link(2,3), (2,12):Link(2,12),\
-				(4,5):Link(4,5), (4,3):Link(4,3),\
-				(4,12):Link(4,12), (5,11):Link(5,11),\
-				(5,6):Link(5,6), (6,13):Link(6,13),\
-				(6,3):Link(6,3), (13,14):Link(13,14)}	
-		
-		self.disconnected_links = set([(2,3), (6,3), (1,11), (13,14)])
-		for link in self.disconnected_links:
-			self.links[link].updated = True
-		
-		self.times = []
-		self.evalues = {0:[], 1:[], 2:[], 3:[], 4:[], 5:[], 6:[],\
-				7:[], 8:[], 9:[], 10:[]}
-		self.lines = [0,0,0,0,0,0,0,0,0,0,0]
-		#fig = plt.figure()
-		#fig.patch.set_facecolor("#E9E9E9")
-		#plt.xlabel("Time")
-		#plt.ylabel("Eigenvalues")
-		#plt.title("$\\lambda$ - Values Over Time (Online)")
-		adj = self.create_adj()
-		L = matlib.zeros((11,11))
-                np.fill_diagonal(L, np.array(sum(adj)))
-                L -= adj
-		self.initialL = L
-		
-		#Create a separate plotting thread for online plotting
-		self.parent_conn, child_con = Pipe()
-		self.plotting_thread = Process(target=self.plot, args=(child_con, ))
-		self.plotting_thread.start()
-
-	def analyze(self, ev, time):
-		switch = self.dpid_to_node[ev.msg.datapath.id]
-		for stat in sorted(ev.msg.body, key=attrgetter('port_no')):
-			port, rx_b, tx_b = stat.port_no, stat.rx_bytes, stat.tx_bytes
-			if (switch,port) in self.links and (switch,port) not in\
-			    self.disconnected_links:
-				link = self.links[(switch,port)]
-				link.elapse_time([rx_b, tx_b], time)
-				link.updated = True
-		
-		all_updated = True
-		for link in self.links:
-			if not self.links[link].updated:
-				all_updated = False
-				break
-		
-		if all_updated:
-			self.spectral_analysis()
-			
-			for link in self.links:
-				if link not in self.disconnected_links:
-					self.links[link].updated = False
-			self.timestep += 1
-	
-	def spectral_analysis(self):
-		data = []
-		adj = self.create_adj()
-		L = matlib.zeros((11,11))
-		np.fill_diagonal(L, np.array(sum(adj)))
-		L -= adj
-		Dnow, Vnow = np.linalg.eig(L)
-		idx = Dnow.argsort()
-		Dnow = Dnow[idx]
-		Vnow = Vnow[:,idx]
-		self.times.append(self.timestep)
-		data.append(self.timestep)
-		data.append({})
-		for i in range(11):
-			self.evalues[i].append(Dnow[i])
-			data[1][i] = Dnow[i]			
-		self.write_matrix(Vnow, "V")
-		self.write_value(Dnow)
-		self.write_matrix(L, "L")
-		self.parent_conn.send(data)
-		
-	def create_adj(self):
-		adj = matlib.zeros((11,11))
-		for link in self.links:
-			link = self.links[link]
-			adj[self.name_to_index[link.src],self.name_to_index[link.dst]] =\
-				link.weight
-			adj[self.name_to_index[link.dst],self.name_to_index[link.src]] =\
-				link.weight
-		return adj
-
-	def write_matrix(self, matrix, file_name):
-                f = open(file_name, "a")
-                for vect in matrix:
-                        for i in range(11):
-                               f.write(`vect[(0,i)]` + " ")
-                        f.write("\n")
-                f.write("\n")
-                f.flush()
-                f.close()
-
-	def write_value(self, valuesIn):
-		values = open("D", "a")
-    		for value in valuesIn:
-        		values.write(`value` + " ")
-    		values.write("\n")
-		values.flush()
-		values.close()
-
-	def plot(self, child_con):
-	    times = []
-	    evalues = {0:[], 1:[], 2:[], 3:[], 4:[], 5:[], 6:[],\
-			7:[], 8:[], 9:[], 10:[]}
-	    lines = [0,0,0,0,0,0,0,0,0,0,0]
-            colors = {0:"Blue", 1:"BlueViolet", 2:"CadetBlue", 3:"Coral", 4:"DarkGreen",\
-                                5:"DarkGoldenRod", 6:"DarkRed", 7:"DarkTurquoise",\
-                                 8:"DarkOliveGreen", 9:"DeepSkyBlue", 10:"FireBrick"}
-            names = {0:'Chicago', 1:'Sunnyvale', 2:'Los Angeles', 3:'Salt Lake City', 4:'Denver',\
-                                5:'El Paso', 6:'D.C.', 7:'Kansas City', 8:'Seattle', 9:'Houston',\
-                                10:'Nashville'}
-
-	    while True:
-	        try:
-		    data = child_con.recv()
-		    
-		    times.append(data[0])
-		    for i in range(11):
-			evalues[i].append(data[1][i])
-		    if len(times) > 20:
-		    	    times.pop(0)
-			    for i in range(11):
-				evalues[i].pop(0)
-		    plt.xlim(min(times),max(times))
-		    ys = [max(evalues[i]) for i in range(11)]
-	 	    plt.ylim(-5, max(ys)+5)
-		    for i in range(11):
-			    line, = plt.plot(times, evalues[i],\
-					color=colors[i], label=names[i])
-			    lines[i] = line
-
-		    plt.legend(handles=lines)
-		    #plt.draw()
-		    plt.pause(2)
-		    for line in lines:
-			    line.remove()	
-		except IOError:
-		    continue
