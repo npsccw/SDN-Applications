@@ -65,8 +65,6 @@ class SimpleMonitor(Routing.SimpleSwitch):
                                          0x0001c4346b971ec0:6, 0x0001f0921c219d40:13}
         ##############################################################################
 
-        self.hw_addr = '0a:e4:1c:d1:3e:46'
-        self.ip_addr = '192.168.1.16'
         self.active_ips = {}
         self.arp_table = {}
 
@@ -224,6 +222,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
             hub.sleep(2)
     
     def map_hosts(self,time=2):
+	#num_host = len(self.active_ips)
         with open("ipList.txt", "r") as f:
             lines = f.readlines()
         	
@@ -232,11 +231,8 @@ class SimpleMonitor(Routing.SimpleSwitch):
     	    line = line.strip()
     	    print("Sending ARP to " + line)
     	    self._handle_arp_rq(line)
-            hub.sleep(time)
+            hub.sleep(1)
     	
-        print("Finished mapping network")
-        print(self.active_ips)
-        print("Number of hosts up: " + `len(self.active_ips)`)
 
 	
     def _handle_arp_rq(self, dst_ip):
@@ -263,13 +259,19 @@ class SimpleMonitor(Routing.SimpleSwitch):
         pkt.add_protocol(ipv4.ipv4(dst= ip_dst, src=self.ip_addr,proto=1))
         pkt.add_protocol(icmp.icmp(type_= 8, code=0, csum=0))#Not sure about echo
 	print("Ping packet sent")
-	self._flood_packet(pkt)
+	self._send_packet(pkt)
 
-    def _handle_icmp_reply(self, pkt_icmp, pkt_ipv4):
+    def _handle_icmp_reply(self, pkt_icmp, pkt_ipv4, datapath):
         if pkt_icmp.type != icmp.ICMP_ECHO_REPLY: return
-        if pkt_ipv4.dst != self.ip_addr: return
+        if pkt_ipv4.dst != self.ip_addr:
+	    print(pkt_ipv4.dst, self.ip_addr) 
+	    return
+	print("------------------------")
 	print("PING RECEIVED THANK GOD")
-
+	print(pkt_ipv4.src)
+	print(pkt_ipv4.dst)
+	print(datapath.id)
+	print("------------------------")
 
     def _flood_packet(self, pkt):
     	for dpid in self.dpids:
@@ -282,9 +284,10 @@ class SimpleMonitor(Routing.SimpleSwitch):
     						data=pkt.data)
     	    datapath.send_msg(out)
     
-    def _send_packet(self, pkt, datapath):
+    def _send_packet(self, pkt, datapath=None):
 	#Pick a random datapath to send from	
-        #datapath = self.dpids[self.dpids.keys()[randint(0,len(self.dpids)-1)]]
+        if not datapath:
+	    datapath = self.dpids[self.dpids.keys()[randint(0,len(self.dpids)-1)]]
         ofproto = datapath.ofproto
 	pkt.serialize()
 	ether_pkt = pkt.get_protocol(ethernet.ethernet)
@@ -478,7 +481,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
 	ofproto = datapath.ofproto
         ofproto_parser = datapath.ofproto_parser
 	nw_dst = struct.unpack('!I', ipv4_to_bin(self.ip_addr))[0]    
-	match = datapath.ofproto_parser.OFPMatch(dl_type=0x800, nw_proto=0x01, nw_dst=nw_dst)
+	match = datapath.ofproto_parser.OFPMatch(dl_type=0x800, nw_dst=nw_dst)
         actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
         mod = datapath.ofproto_parser.OFPFlowMod(
                 datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
@@ -571,7 +574,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
 	pkt_icmp = pkt.get_protocol(icmp.icmp)
 	pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
 	if pkt_icmp:
-	    self._handle_icmp_reply(pkt_icmp, pkt_ipv4)
+	    self._handle_icmp_reply(pkt_icmp, pkt_ipv4, msg.datapath)
 	if pkt_arp:
             self._handle_arp_reply(pkt_arp, ev.msg.in_port, hex(msg.datapath.id))   
         if self.fingerprint:
