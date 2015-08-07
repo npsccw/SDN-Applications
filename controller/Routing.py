@@ -72,8 +72,8 @@ class SimpleSwitch(app_manager.RyuApp):
                         priority=ofproto.OFP_DEFAULT_PRIORITY,
                         flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
                 datapath.send_msg(mod)
-		print("Created IP Flow to match: (nw_src={}, nw_dst={}, in_port={}, actions={}".\
-			format(src, dst, in_port, str(actions))) 
+		#print("Created IP Flow to match: (nw_src={}, nw_dst={}, in_port={}, actions={}".\
+			#format(src, dst, in_port, str(actions))) 
 
 		#This line is wrong
 		#self.add_flow(datapath, in_port, actions, dl_type)

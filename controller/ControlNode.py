@@ -205,11 +205,11 @@ class SimpleMonitor(Routing.SimpleSwitch):
                 self.arp_table[pkt_arp.src_ip] = pkt_arp.src_mac
                 if self.topology:
                     self.draw_graph(1, draw=True)
-    if pkt_arp.opcode == arp.ARP_REQUEST and pkt_arp.src_ip != self.ip_addr:
+        if pkt_arp.opcode == arp.ARP_REQUEST and pkt_arp.src_ip != self.ip_addr:
         #print("ARP Reqest from: " + pkt_arp.src_mac + " requesting: " + pkt_arp.dst_ip)
-        if pkt_arp.dst_ip not in self.arp_table: return
+            if pkt_arp.dst_ip not in self.arp_table: return
             #construct and send ARP reply
-        reply_pkt = packet.Packet()
+            reply_pkt = packet.Packet()
             reply_pkt.add_protocol(ethernet.ethernet(ethertype=0x806,\
                                                dst=pkt_arp.src_mac,\
                                                src=self.arp_table[pkt_arp.dst_ip]))
@@ -218,10 +218,10 @@ class SimpleMonitor(Routing.SimpleSwitch):
                                  src_ip=pkt_arp.dst_ip,\
                                  dst_mac=pkt_arp.src_mac,\
                                  dst_ip=pkt_arp.src_ip))
-        print("Responded to ARP Request: " )
-        print("Gave [" + pkt_arp.src_mac + "," + pkt_arp.src_ip + "]" +\
+            print("Responded to ARP Request: " )
+            print("Gave [" + pkt_arp.src_mac + "," + pkt_arp.src_ip + "]" +\
             "[" + pkt_arp.dst_ip + "," + self.arp_table[pkt_arp.dst_ip] + "]") 
-        self._send_packet(reply_pkt, self.dpids[int(dpid, 16)]) 
+            self._send_packet(reply_pkt, self.dpids[int(dpid, 16)]) 
 
 
 #############################
@@ -246,13 +246,14 @@ class SimpleMonitor(Routing.SimpleSwitch):
         ofproto = datapath.ofproto
 	pkt.serialize()
 	ether_pkt = pkt.get_protocol(ethernet.ethernet)
-	print("Sending packet out: " + `self.mac_to_port[datapath.id][ether_pkt.dst]`)
-        actions = [datapath.ofproto_parser.OFPActionOutput(self.mac_to_port[datapath.id]\
+	if ether_pkt.dst in self.mac_to_port[datapath.id]:
+	    print("Sending packet out: " + `self.mac_to_port[datapath.id][ether_pkt.dst]`)
+            actions = [datapath.ofproto_parser.OFPActionOutput(self.mac_to_port[datapath.id]\
 							[ether_pkt.dst])]
-        out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=0xffffffff,\
+            out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=0xffffffff,\
                                                 in_port=ofproto.OFPP_CONTROLLER, actions=actions,\
                                                 data=pkt.data)
-        datapath.send_msg(out)
+            datapath.send_msg(out)
 
 ##########################
 #  How to draw a graph  #
@@ -308,10 +309,10 @@ class SimpleMonitor(Routing.SimpleSwitch):
 ##########################
 
     def _create_icmp_flow(self,datapath):
-    ofproto = datapath.ofproto
+        ofproto = datapath.ofproto
         ofproto_parser = datapath.ofproto_parser
-    nw_dst = struct.unpack('!I', ipv4_to_bin(self.ip_addr))[0]    
-    match = datapath.ofproto_parser.OFPMatch(dl_type=0x800, nw_dst=nw_dst)
+        nw_dst = struct.unpack('!I', ipv4_to_bin(self.ip_addr))[0]    
+        match = datapath.ofproto_parser.OFPMatch(dl_type=0x800, nw_dst=nw_dst)
         actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
         mod = datapath.ofproto_parser.OFPFlowMod(
                 datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
@@ -911,7 +912,7 @@ class SimpleMonitor(Routing.SimpleSwitch):
             print("logging into " + self.dpid_to_ip[dp])
             s = spawn("ssh %s@%s" %(username, self.dpid_to_ip[dp]))
             s.expect(".*assword")
-        s.sendline(password)
+            s.sendline(password)
             s.expect("Press any key to continue")
             s.sendline("\r")
             s.sendline("config")
@@ -957,26 +958,26 @@ class SimpleMonitor(Routing.SimpleSwitch):
         print("CREATED SPANNING TREE")
 
     def send_ping(self, ip_dst):
-    pkt = packet.Packet()
-    if ip_dst in self.arp_table:
-        mac_dst = self.arp_table[ip_dst]
-    else:
-        return
-    pkt.add_protocol(ethernet.ethernet(ethertype=0x800,dst=mac_dst,\
+        pkt = packet.Packet()
+        if ip_dst in self.arp_table:
+            mac_dst = self.arp_table[ip_dst]
+        else:
+            return
+        pkt.add_protocol(ethernet.ethernet(ethertype=0x800,dst=mac_dst,\
                                                            src=self.hw_addr))
 
         pkt.add_protocol(ipv4.ipv4(dst= ip_dst, src=self.ip_addr,proto=1))
         pkt.add_protocol(icmp.icmp(type_= 8, code=0, csum=0))#Not sure about echo
-    print("Ping packet sent")
-    self._send_packet(pkt)
+        print("Ping packet sent")
+        self._flood_packet(pkt)
 
     def map_hosts(self,time=2):
-    with open("ipList.txt", "r") as f:
-        lines = f.readlines()
+        with open("ipList.txt", "r") as f:
+            lines = f.readlines()
         
-    shuffle(lines)
-    for line in lines:
-        line = line.strip()
-        print("Sending ARP to " + line)
-        self._handle_arp_rq(line)
-        hub.sleep(1)
+        shuffle(lines)
+        for line in lines:
+            line = line.strip()
+            print("Sending ARP to " + line)
+            self._handle_arp_rq(line)
+            hub.sleep(1)
