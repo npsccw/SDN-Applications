@@ -1,3 +1,8 @@
+"""
+This file takes the data rates collected from the CCW
+SDN.  These function are made specifically for CCW, so
+major modification is required to generalize this.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 from Link import Link

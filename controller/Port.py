@@ -1,3 +1,10 @@
+"""
+This is a helper class for topology 
+detection. This data structure is how
+ControlNode represents the ports on the 
+switches.
+"""
+
 import time
 
 class Port(object):

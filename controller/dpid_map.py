@@ -1,3 +1,7 @@
+"""
+This is a helper file for the ControlNode to 
+create its ARP table and map all of its hosts
+"""
 from pexpect import spawn
 
 def map_switch_dpid():

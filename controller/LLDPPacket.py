@@ -1,3 +1,8 @@
+"""
+Helper class for LLDP.  This datastructure
+is how we represent LLDP packets that can then 
+be serialized and then send on the wire.
+"""
 from ryu.exception import RyuException
 from ryu.lib.packet import packet, ethernet, lldp
 from ryu.ofproto.ether import ETH_TYPE_LLDP

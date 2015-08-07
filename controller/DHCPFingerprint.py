@@ -1,3 +1,8 @@
+"""
+Helper class for the fingerprint application
+There are better ways of parsing the packet
+that should be looked into.
+"""
 from dpkt import *
 import requests
 import hashlib

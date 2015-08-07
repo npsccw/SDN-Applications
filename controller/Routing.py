@@ -1,3 +1,10 @@
+"""
+This is the base router for all our operations.
+Routing will learn the locations of the the hosts
+and set up flows on the switches that match the 
+behavior we want.
+"""
+
 #Required Ryu modules
 from ryu.base import app_manager
 from ryu.controller import mac_to_port, ofp_event
@@ -95,6 +102,10 @@ class SimpleSwitch(app_manager.RyuApp):
 
 	@set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
 	def _packet_in_handler(self, ev):
+		"""
+		This is the function to modify if you're watching
+		for a specific packet type.
+		"""
 		msg = ev.msg
 		
 	        datapath = msg.datapath

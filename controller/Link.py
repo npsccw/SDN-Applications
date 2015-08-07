@@ -1,4 +1,11 @@
+"""
+Helper class for ControlNode for 
+topology detection.  This data
+structure is how ControlNode represents
+switch links.
+"""
 import time
+
 class Link:
 
     def __init__(self, src, dst):

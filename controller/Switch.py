@@ -1,3 +1,8 @@
+"""
+This file is ControlNode's representation of a 
+network switch, which is used for topology detection.
+"""
+
 from Port import Port, PortState, PortData, PortDataState
 class Switch(object):
     # This is data class passed by EventSwitchXXX
