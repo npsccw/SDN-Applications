@@ -80,14 +80,9 @@ class SimpleMonitor(Routing.SimpleSwitch):
         self._n_analyze = True
         self._load_settings()
         
-        signal.signal(signal.SIGUSR1, self._load_settings)
-        
-
-
-	#The GUI doesn't work because of multiprocessing issues
-        #self.parent_conn, child_con = Pipe()
-        #self.gui_thread = Process(target=self._gui, args=(child_con,))
-        #self.gui_thread.start()
+        #Listen for a signal that tells the controller to update
+        #its settings.  This is really tempramental.
+        #signal.signal(signal.SIGUSR1, self._load_settings)
         self.threads.append(hub.spawn(self._monitor))
         self.threads.append(hub.spawn(self._listener))
 
@@ -99,7 +94,8 @@ class SimpleMonitor(Routing.SimpleSwitch):
             for line in f.readlines():
                 exec(line)
 
-
+        # If the fingerprint app is checked to run and has not been run yet,
+        # then do all the following.
         if self.fingerprint and self._n_fingerprint:
             self._n_fingerprint = False
             self.fingerprints = {}
@@ -132,71 +128,16 @@ class SimpleMonitor(Routing.SimpleSwitch):
             self.threads.append(hub.spawn(self.link_loop))
  
 
-    def clear_all_flows(self):
-        for switch in [1,2,3,4,5,6,8,9,10,11,12,13,14]:
-            print("Deleting flows on {}".format(switch))
-            system("dpctl del-flows tcp:10.10.0.{}:6655".format(switch))
-            
-        for dp in self.dpids:
-            datapath = self.dpids[dp]
-            print("Adding flows onto {}".format(dp))
-            self._create_lldp_flow(datapath)
-	    self._create_arp_flow(datapath)
-	    self._create_icmp_flow(datapath)
+
     
-    def switch_on_all_ports(self,username="manager", password="ccw"):
-        for dp in self.dpids:
-            dp = hex(dp)
-            print("logging into " + self.dpid_to_ip[dp])
-            s = spawn("ssh %s@%s" %(username, self.dpid_to_ip[dp]))
-            s.expect(".*assword")
-	    s.sendline(password)
-            s.expect("Press any key to continue")
-            s.sendline("\r")
-            s.sendline("config")
-            for n in range(1,25):
-                #print("Enabling port " + `n` + " on " + self.dpid_to_ip[dp])
-                s.sendline("interface ethernet " + `n` + " enable")
-            s.sendline("save")
-            s.sendline("logo")
-            s.sendline("y")
-        print("CREATED FULLY CONNECTED GRAPH")
-
-    def create_spanning_tree(self, username="manager", password="ccw"):
-        T = nx.minimum_spanning_tree(self.graph)
-
-        used_links = []
-        disabled_ports = {}
-
-        for link in self.links:
-            used = False
-            src, dst = hex(link.src.dpid), hex(link.dst.dpid)
-            for edge in T.edges():
-                if (src,dst) == edge or (dst,src) == edge:
-                    used = True
-            if not used:
-                if link.src.dpid not in disabled_ports:
-                    disabled_ports[link.src.dpid] = []
-                disabled_ports[link.src.dpid].append(link.src.port_no)
-        for dp in disabled_ports:
-            ip = self.dpid_to_ip[hex(dp)]
-            print("logging into " + ip)
-            s = spawn("ssh %s@%s" %(username, ip))
-            s.expect(".*assword")
-            s.sendline(password)
-            s.expect("Press any key to continue")
-            s.sendline("\r")
-            s.sendline("config")
-            for n in disabled_ports[dp]:
-                #print("Enabling port " + `n` + " on " + self.dpid_to_ip[dp])
-                s.sendline("interface ethernet " + `n` + " disable")
-            s.sendline("save")
-            s.sendline("logo")
-            s.sendline("y")
-        print("CREATED SPANNING TREE")
-
-    #Todo: Add listener and messages
     def _listener(self):
+        """
+        This function will continuously open a file
+        named 'commands' and execute each line in 
+        that file and then clear the file.  If a 
+        command fails, then the file is not cleared,
+        so be wary of that.
+        """
         while True:
             with open("commands", "r") as f:
                 for line in f.readlines():
@@ -206,6 +147,11 @@ class SimpleMonitor(Routing.SimpleSwitch):
             hub.sleep(2)
 
     def _monitor(self):
+        """
+        Runs the monitor app which collects data from the network.
+        Will only run if "analyze" is clicked on the GUI's 
+        splash screen.
+        """
         if self.topology:
             while self.dpids == {}:
         	print("Waiting for live datapaths")
@@ -220,21 +166,10 @@ class SimpleMonitor(Routing.SimpleSwitch):
       	    if self.topology:
 		self.draw_graph(1, draw=True)  
             hub.sleep(2)
-    
-    def map_hosts(self,time=2):
-	#num_host = len(self.active_ips)
-        with open("ipList.txt", "r") as f:
-            lines = f.readlines()
-        	
-    	shuffle(lines)
-    	for line in lines:
-    	    line = line.strip()
-    	    print("Sending ARP to " + line)
-    	    self._handle_arp_rq(line)
-            hub.sleep(1)
-    	
 
-	
+##################################
+#  ARP and ICMP Packet Handlers  #
+##################################
     def _handle_arp_rq(self, dst_ip):
     	pkt = packet.Packet()
     	pkt.add_protocol(ethernet.ethernet(ethertype=0x806,\
@@ -247,31 +182,50 @@ class SimpleMonitor(Routing.SimpleSwitch):
                                  dst_ip=dst_ip))
         self._flood_packet(pkt)
     
-    def send_ping(self, ip_dst):
-	pkt = packet.Packet()
-	if ip_dst in self.arp_table:
-	    mac_dst = self.arp_table[ip_dst]
-	else:
-	    return
-	pkt.add_protocol(ethernet.ethernet(ethertype=0x800,dst=mac_dst,\
-                                                           src=self.hw_addr))
-
-        pkt.add_protocol(ipv4.ipv4(dst= ip_dst, src=self.ip_addr,proto=1))
-        pkt.add_protocol(icmp.icmp(type_= 8, code=0, csum=0))#Not sure about echo
-	print("Ping packet sent")
-	self._send_packet(pkt)
 
     def _handle_icmp_reply(self, pkt_icmp, pkt_ipv4, datapath):
         if pkt_icmp.type != icmp.ICMP_ECHO_REPLY: return
         if pkt_ipv4.dst != self.ip_addr:
-	    print(pkt_ipv4.dst, self.ip_addr) 
-	    return
-	print("------------------------")
-	print("PING RECEIVED THANK GOD")
-	print(pkt_ipv4.src)
-	print(pkt_ipv4.dst)
-	print(datapath.id)
-	print("------------------------")
+            print(pkt_ipv4.dst, self.ip_addr) 
+            return
+        print("------------------------")
+        print("PING RECEIVED THANK GOD")
+        print(pkt_ipv4.src)
+        print(pkt_ipv4.dst)
+        print(datapath.id)
+        print("------------------------")
+
+    #Finish ARP redesignation
+    def _handle_arp_reply(self, pkt_arp, port, dpid):
+        if pkt_arp.opcode == arp.ARP_REPLY and pkt_arp.dst_mac == self.hw_addr:
+            if pkt_arp.src_ip not in self.active_ips:
+                print("ARP from " + pkt_arp.src_ip + "\n")
+                self.active_ips[pkt_arp.src_ip] =  [dpid, port]
+                self.arp_table[pkt_arp.src_ip] = pkt_arp.src_mac
+                if self.topology:
+                    self.draw_graph(1, draw=True)
+    if pkt_arp.opcode == arp.ARP_REQUEST and pkt_arp.src_ip != self.ip_addr:
+        #print("ARP Reqest from: " + pkt_arp.src_mac + " requesting: " + pkt_arp.dst_ip)
+        if pkt_arp.dst_ip not in self.arp_table: return
+            #construct and send ARP reply
+        reply_pkt = packet.Packet()
+            reply_pkt.add_protocol(ethernet.ethernet(ethertype=0x806,\
+                                               dst=pkt_arp.src_mac,\
+                                               src=self.arp_table[pkt_arp.dst_ip]))
+            reply_pkt.add_protocol(arp.arp(opcode=arp.ARP_REPLY,\
+                                 src_mac=self.arp_table[pkt_arp.dst_ip],\
+                                 src_ip=pkt_arp.dst_ip,\
+                                 dst_mac=pkt_arp.src_mac,\
+                                 dst_ip=pkt_arp.src_ip))
+        print("Responded to ARP Request: " )
+        print("Gave [" + pkt_arp.src_mac + "," + pkt_arp.src_ip + "]" +\
+            "[" + pkt_arp.dst_ip + "," + self.arp_table[pkt_arp.dst_ip] + "]") 
+        self._send_packet(reply_pkt, self.dpids[int(dpid, 16)]) 
+
+
+#############################
+#  How to send out packets  #
+#############################
 
     def _flood_packet(self, pkt):
     	for dpid in self.dpids:
@@ -299,34 +253,14 @@ class SimpleMonitor(Routing.SimpleSwitch):
                                                 data=pkt.data)
         datapath.send_msg(out)
 
-    #Finish ARP redesignation
-    def _handle_arp_reply(self, pkt_arp, port, dpid):
-    	if pkt_arp.opcode == arp.ARP_REPLY and pkt_arp.dst_mac == self.hw_addr:
-    	    if pkt_arp.src_ip not in self.active_ips:
-    	        print("ARP from " + pkt_arp.src_ip + "\n")
-    	        self.active_ips[pkt_arp.src_ip] =  [dpid, port]
-    	        self.arp_table[pkt_arp.src_ip] = pkt_arp.src_mac
-    	        if self.topology:
-                    self.draw_graph(1, draw=True)
-	if pkt_arp.opcode == arp.ARP_REQUEST and pkt_arp.src_ip != self.ip_addr:
-	    #print("ARP Reqest from: " + pkt_arp.src_mac + " requesting: " + pkt_arp.dst_ip)
-	    if pkt_arp.dst_ip not in self.arp_table: return
-            #construct and send ARP reply
-	    reply_pkt = packet.Packet()
-            reply_pkt.add_protocol(ethernet.ethernet(ethertype=0x806,\
-                                               dst=pkt_arp.src_mac,\
-                                               src=self.arp_table[pkt_arp.dst_ip]))
-            reply_pkt.add_protocol(arp.arp(opcode=arp.ARP_REPLY,\
-                                 src_mac=self.arp_table[pkt_arp.dst_ip],\
-                                 src_ip=pkt_arp.dst_ip,\
-                                 dst_mac=pkt_arp.src_mac,\
-                                 dst_ip=pkt_arp.src_ip))
-	    print("Responded to ARP Request: " )
-	    print("Gave [" + pkt_arp.src_mac + "," + pkt_arp.src_ip + "]" +\
-			"[" + pkt_arp.dst_ip + "," + self.arp_table[pkt_arp.dst_ip] + "]") 
-	    self._send_packet(reply_pkt, self.dpids[int(dpid, 16)]) 
-
+##########################
+#  How to draw a graph  #
+#########################
     def draw_graph(self, timeout, draw=False):
+        """
+        This function does the actual drawing of the 
+        network topology.
+        """
     	G = nx.Graph()
 
         plt.clf()
@@ -367,70 +301,51 @@ class SimpleMonitor(Routing.SimpleSwitch):
     	    nx.draw_networkx_edges(G, pos)
             plt.pause(timeout)
 
-    def _request_port_stats(self, datapath):
-		ofproto = datapath.ofproto
-		parser = datapath.ofproto_parser
-		req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_NONE)
-		datapath.send_msg(req)
 
-		
-    def close(self):
-        self.is_active = False
-        if self.link_discovery:
-            self.lldp_event.set()
-	    self.link_event.set()
-	    hub.joinall(self.threads)
-            
-    def _register(self, dp):
-        assert dp.id is not None
+##########################
+#  How to create a flow  #
+##########################
 
-        self.dpids[dp.id] = dp
-        if dp.id not in self.port_state:
-            self.port_state[dp.id] = PortState()
-            for port in dp.ports.values():
-                self.port_state[dp.id].add(port.port_no, port)
+    def _create_icmp_flow(self,datapath):
+    ofproto = datapath.ofproto
+        ofproto_parser = datapath.ofproto_parser
+    nw_dst = struct.unpack('!I', ipv4_to_bin(self.ip_addr))[0]    
+    match = datapath.ofproto_parser.OFPMatch(dl_type=0x800, nw_dst=nw_dst)
+        actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+        mod = datapath.ofproto_parser.OFPFlowMod(
+                datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
+                idle_timeout=0, hard_timeout=0, actions=actions,
+                priority=0xFFFF)
+        datapath.send_msg(mod)
 
-    def _unregister(self, dp):
-        if dp.id in self.dpids:
-            del self.dpids[dp.id]
-            del self.port_state[dp.id]
+    def _create_lldp_flow(self, datapath):
+        ofproto = datapath.ofproto
+        ofproto_parser = datapath.ofproto_parser        
+        if ofproto.OFP_VERSION == ofproto_v1_0.OFP_VERSION:
+            #Add LLDP Rule
+            match = datapath.ofproto_parser.OFPMatch(dl_type=0x88cc)
+            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+            mod = datapath.ofproto_parser.OFPFlowMod(
+                        datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
+                        idle_timeout=0, hard_timeout=0, actions=actions,
+                        priority=0xFFFF)
+            datapath.send_msg(mod)
 
-    def _get_switch(self, dpid):
-        if dpid in self.dpids:
-            switch = Switch(self.dpids[dpid])
-            for ofpport in self.port_state[dpid].values():
-                switch.add_port(ofpport)
-            return switch
+    def _create_arp_flow(self, datapath):
+        ofproto = datapath.ofproto
+        ofproto_parser = datapath.ofproto_parser
+        match = datapath.ofproto_parser.OFPMatch(dl_type=0x0806)
+        actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+        mod = datapath.ofproto_parser.OFPFlowMod(
+                datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
+                idle_timeout=0, hard_timeout=0, actions=actions,
+                priority=0xFFFF)
+        datapath.send_msg(mod)
 
-    def _get_port(self, dpid, port_no):
-        switch = self._get_switch(dpid)
-        if switch:
-            for p in switch.ports:
-                if p.port_no == port_no:
-                    return p
 
-    def _port_added(self, port):
-        lldp_data = LLDPPacket.lldp_packet(
-            port.dpid, port.port_no, port.hw_addr, self.DEFAULT_TTL)
-        self.ports.add_port(port, lldp_data)
-        # LOG.debug('_port_added dpid=%s, port_no=%s, live=%s',
-        #           port.dpid, port.port_no, port.is_live())
-
-    def _link_down(self, port):
-        try:
-            dst, rev_link_dst = self.links.port_deleted(port)
-        except KeyError:
-            # LOG.debug('key error. src=%s, dst=%s',
-            #           port, self.links.get_peer(port))
-            return
-        link = Link(port, dst)
-        self.send_event_to_observers(event.EventLinkDelete(link))
-        if rev_link_dst:
-            rev_link = Link(dst, rev_link_dst)
-            self.send_event_to_observers(event.EventLinkDelete(rev_link))
-        self.ports.move_front(dst)
-
-	
+###################################
+#  How to use Ryu Event Handlers  #
+###################################	
 
     @set_ev_cls(ofp_event.EventOFPStateChange,
             [MAIN_DISPATCHER, DEAD_DISPATCHER])
@@ -477,41 +392,6 @@ class SimpleMonitor(Routing.SimpleSwitch):
         if self.topology:
             self.lldp_event.set()
 
-    def _create_icmp_flow(self,datapath):
-	ofproto = datapath.ofproto
-        ofproto_parser = datapath.ofproto_parser
-	nw_dst = struct.unpack('!I', ipv4_to_bin(self.ip_addr))[0]    
-	match = datapath.ofproto_parser.OFPMatch(dl_type=0x800, nw_dst=nw_dst)
-        actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
-        mod = datapath.ofproto_parser.OFPFlowMod(
-                datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
-                idle_timeout=0, hard_timeout=0, actions=actions,
-                priority=0xFFFF)
-        datapath.send_msg(mod)
-
-    def _create_lldp_flow(self, datapath):
-        ofproto = datapath.ofproto
-        ofproto_parser = datapath.ofproto_parser        
-        if ofproto.OFP_VERSION == ofproto_v1_0.OFP_VERSION:
-            #Add LLDP Rule
-            match = datapath.ofproto_parser.OFPMatch(dl_type=0x88cc)
-            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
-            mod = datapath.ofproto_parser.OFPFlowMod(
-                        datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
-                        idle_timeout=0, hard_timeout=0, actions=actions,
-                        priority=0xFFFF)
-            datapath.send_msg(mod)
-
-    def _create_arp_flow(self, datapath):
-        ofproto = datapath.ofproto
-	ofproto_parser = datapath.ofproto_parser
-        match = datapath.ofproto_parser.OFPMatch(dl_type=0x0806)
-        actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
-        mod = datapath.ofproto_parser.OFPFlowMod(
-                datapath=datapath, match=match, cookie=0, command=ofproto.OFPFC_ADD,
-                idle_timeout=0, hard_timeout=0, actions=actions,
-                priority=0xFFFF)
-        datapath.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def port_status_handler(self, ev):
@@ -588,7 +468,18 @@ class SimpleMonitor(Routing.SimpleSwitch):
         if self.topology:
             self._lldp_handler(msg)
 
+#######################
+#  DHCP Fingerprints  #
+#######################
+
     def _dhcp_handler(self, msg):
+        """
+        Takes a DHCP packet and parses it for MAC, IP, Switch, Port, Options
+        Using the options, this function checks those options against a 
+        fingerprint database in order to guess the operating system used 
+        by the host.  Afterwards, it stores that information in a 
+        Cassandra database.
+        """
         dpid = hex(msg.datapath.id)
         pkt = msg.data
         try:
@@ -664,8 +555,101 @@ class SimpleMonitor(Routing.SimpleSwitch):
             self.session.execute(command)
 
 
-    def _lldp_handler(self, msg):
+#######################################
+#  LLDP Portion - Topology Detection  #
+#######################################
+    def close(self):
+        self.is_active = False
+        if self.link_discovery:
+            self.lldp_event.set()
+        self.link_event.set()
+        hub.joinall(self.threads)
+            
+    def _register(self, dp):
+        """
+        Takes the datapath and registers
+        it as a switch.  This is how
+        the controller represents the 
+        switches.
+        """
+        assert dp.id is not None
+
+        self.dpids[dp.id] = dp
+        if dp.id not in self.port_state:
+            self.port_state[dp.id] = PortState()
+            for port in dp.ports.values():
+                self.port_state[dp.id].add(port.port_no, port)
+
+    def _unregister(self, dp):
+        """
+        This function is called when a switch
+        dies. It helps with the book-keeping
+        and clean up.
+        """
+        if dp.id in self.dpids:
+            del self.dpids[dp.id]
+            del self.port_state[dp.id]
+
+    def _get_switch(self, dpid):
+        """
+        Returns the switch representation
+        of the datapath id.
+        """
+        if dpid in self.dpids:
+            switch = Switch(self.dpids[dpid])
+            for ofpport in self.port_state[dpid].values():
+                switch.add_port(ofpport)
+            return switch
+
+    def _get_port(self, dpid, port_no):
+        """
+        Returns the controller's representation of a port.
+        """
+        switch = self._get_switch(dpid)
+        if switch:
+            for p in switch.ports:
+                if p.port_no == port_no:
+                    return p
+
+    def _port_added(self, port):
+        """
+        Adds the port to a list of ports used to 
+        connect two switches.
+        """
+        lldp_data = LLDPPacket.lldp_packet(
+            port.dpid, port.port_no, port.hw_addr, self.DEFAULT_TTL)
+        self.ports.add_port(port, lldp_data)
+        # LOG.debug('_port_added dpid=%s, port_no=%s, live=%s',
+        #           port.dpid, port.port_no, port.is_live())
+
+    def _link_down(self, port):
+        """
+        Creates an event that will tell the controller
+        that the link state has changed so that the 
+        controller can reflect that in its representation.
+        """
         try:
+            dst, rev_link_dst = self.links.port_deleted(port)
+        except KeyError:
+            # LOG.debug('key error. src=%s, dst=%s',
+            #           port, self.links.get_peer(port))
+            return
+        link = Link(port, dst)
+        self.send_event_to_observers(event.EventLinkDelete(link))
+        if rev_link_dst:
+            rev_link = Link(dst, rev_link_dst)
+            self.send_event_to_observers(event.EventLinkDelete(rev_link))
+        self.ports.move_front(dst)
+
+    def _lldp_handler(self, msg):
+        """
+        Will react to LLDP packets by parsing then and creating 
+        events so that the controller knows to update its topology
+        representation.
+        """
+        try:
+            # Attempt to parse the packet as an LLDP packet
+            # Will fail if it is not an LLDP packet
             src_dpid, src_port_no = LLDPPacket.lldp_parse(msg.data)
         except LLDPPacket.LLDPUnknownFormat as e:
             # This handler can receive all the packtes which can be
@@ -721,6 +705,11 @@ class SimpleMonitor(Routing.SimpleSwitch):
             
 
     def send_lldp_packet(self, port):
+        """
+        Handles the crafting and sending of LLDP packets
+        For each port on each switch, create a packet 
+        unique to that (switch,port) combination.
+        """
         try:
             port_data = self.ports.lldp_sent(port)
         except KeyError as e:
@@ -752,6 +741,11 @@ class SimpleMonitor(Routing.SimpleSwitch):
                       dp.ofproto.OFP_VERSION)
 
     def lldp_loop(self):
+        """
+        This function is how the topology is kept up to date.
+        It will send out LLDP packets at every interval to
+        update the topology.
+        """
         while self.is_active:
 	    self.lldp_event.clear()
             now = time.time()
@@ -783,6 +777,13 @@ class SimpleMonitor(Routing.SimpleSwitch):
             self.lldp_event.wait(timeout=timeout)
 	
     def link_loop(self):
+        """
+        This function helps update the actual connection
+        between switches.  I don't know the difference
+        between this function and lldp_loop, but you
+        need both of them, otherwise, the topology won't
+        update.
+        """
         while self.is_active:
 	    self.link_event.clear()
             now = time.time()
@@ -818,11 +819,26 @@ class SimpleMonitor(Routing.SimpleSwitch):
 		    self.switch_ports[link.src.dpid].remove(link.src.port_no)
 
 	    self.link_event.wait(timeout=self.TIMEOUT_CHECK_PERIOD)
-	
+
+##################################
+#   Application Implementations  #
+##################################	
+
+    def _request_port_stats(self, datapath):
+        """
+        Sends a message to each switch requesting
+        port statistics.  This is used for network
+        analytics.
+        """
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_NONE)
+        datapath.send_msg(req)
+
+
     #Adds or removes an IP flow from each switch
     def _modify_blacklist(self, ipaddr, mode, dl_type=0x800):
-       	res = dot_to_dec(ipaddr)
-
+       	res = struct.unpack('!I', ipv4_to_bin(ipaddr))[0]
     	if mode == "add":
     	    if ipaddr in self.blacklist:
     	        return
@@ -876,3 +892,90 @@ class SimpleMonitor(Routing.SimpleSwitch):
         s.sendline('y')
         print('Throttle Successful')
 
+    def clear_all_flows(self):
+        for switch in [1,2,3,4,5,6,8,9,10,11,12,13,14]:
+            print("Deleting flows on {}".format(switch))
+            system("dpctl del-flows tcp:10.10.0.{}:6655".format(switch))
+            
+        for dp in self.dpids:
+            datapath = self.dpids[dp]
+            print("Adding flows onto {}".format(dp))
+            self._create_lldp_flow(datapath)
+        self._create_arp_flow(datapath)
+        self._create_icmp_flow(datapath)
+    
+    def switch_on_all_ports(self,username="manager", password="ccw"):
+        for dp in self.dpids:
+            dp = hex(dp)
+            print("logging into " + self.dpid_to_ip[dp])
+            s = spawn("ssh %s@%s" %(username, self.dpid_to_ip[dp]))
+            s.expect(".*assword")
+        s.sendline(password)
+            s.expect("Press any key to continue")
+            s.sendline("\r")
+            s.sendline("config")
+            for n in range(1,25):
+                #print("Enabling port " + `n` + " on " + self.dpid_to_ip[dp])
+                s.sendline("interface ethernet " + `n` + " enable")
+            s.sendline("save")
+            s.sendline("logo")
+            s.sendline("y")
+        print("CREATED FULLY CONNECTED GRAPH")
+
+    def create_spanning_tree(self, username="manager", password="ccw"):
+        T = nx.minimum_spanning_tree(self.graph)
+
+        used_links = []
+        disabled_ports = {}
+
+        for link in self.links:
+            used = False
+            src, dst = hex(link.src.dpid), hex(link.dst.dpid)
+            for edge in T.edges():
+                if (src,dst) == edge or (dst,src) == edge:
+                    used = True
+            if not used:
+                if link.src.dpid not in disabled_ports:
+                    disabled_ports[link.src.dpid] = []
+                disabled_ports[link.src.dpid].append(link.src.port_no)
+        for dp in disabled_ports:
+            ip = self.dpid_to_ip[hex(dp)]
+            print("logging into " + ip)
+            s = spawn("ssh %s@%s" %(username, ip))
+            s.expect(".*assword")
+            s.sendline(password)
+            s.expect("Press any key to continue")
+            s.sendline("\r")
+            s.sendline("config")
+            for n in disabled_ports[dp]:
+                #print("Enabling port " + `n` + " on " + self.dpid_to_ip[dp])
+                s.sendline("interface ethernet " + `n` + " disable")
+            s.sendline("save")
+            s.sendline("logo")
+            s.sendline("y")
+        print("CREATED SPANNING TREE")
+
+    def send_ping(self, ip_dst):
+    pkt = packet.Packet()
+    if ip_dst in self.arp_table:
+        mac_dst = self.arp_table[ip_dst]
+    else:
+        return
+    pkt.add_protocol(ethernet.ethernet(ethertype=0x800,dst=mac_dst,\
+                                                           src=self.hw_addr))
+
+        pkt.add_protocol(ipv4.ipv4(dst= ip_dst, src=self.ip_addr,proto=1))
+        pkt.add_protocol(icmp.icmp(type_= 8, code=0, csum=0))#Not sure about echo
+    print("Ping packet sent")
+    self._send_packet(pkt)
+
+    def map_hosts(self,time=2):
+    with open("ipList.txt", "r") as f:
+        lines = f.readlines()
+        
+    shuffle(lines)
+    for line in lines:
+        line = line.strip()
+        print("Sending ARP to " + line)
+        self._handle_arp_rq(line)
+        hub.sleep(1)
